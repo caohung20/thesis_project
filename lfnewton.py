@@ -9,7 +9,7 @@ import pandas as pd
 import math
 #base power to convert to per unit
 basemva=100 
-accuracy=0.0001
+accuracy=0.001
 #maximum of iteration
 maxiter=100 
 #base voltage to convert to per unit
@@ -53,6 +53,7 @@ for n in range(nbus):
             Ybus[n,n] += y[k] + Bc[k]
         else:
             pass
+
 print(Ybus)
 #start newton-raphson program
 busdata=pd.read_excel("G:\do_an_tot_nghiep\input_test.xlsx",sheet_name = 0,skiprows=1)
@@ -62,7 +63,7 @@ Pgg=np.zeros(nbus,dtype=complex)
 Qgg=np.zeros(nbus,dtype=complex)
 ngs=np.zeros(nbus)
 nss=np.zeros(nbus)
-Vm=busdata['Vscheduled[pu]'].values
+Vm=np.zeros(nbus,dtype=complex)
 delta=np.zeros(nbus,dtype=complex)
 yload=np.zeros(nbus,dtype=complex)
 deltad=np.zeros(nbus,dtype=complex)
@@ -75,12 +76,13 @@ Qmin=busdata['QgenMin[kvar]'].values
 Qmax=busdata['QgenMax[kvar]'].values
 Qsh=np.zeros(nbus,dtype=float)
 V=np.zeros(nbus,dtype=complex)
-P=np.zeros(nbus)
-Q=np.zeros(nbus)
+P=np.zeros(nbus,dtype=complex)
+Q=np.zeros(nbus,dtype=complex)
 S=np.zeros(nbus,dtype=complex)
 for k in range(nbus):
     n=int(busdata.iloc[k][0])
     n-=1
+    Vm[n]=busdata.iloc[k][8]
     Pd[n]=busdata.iloc[k][4]/(10**3)    #P load
     Qd[n]=busdata.iloc[k][5]/(10**3)    #Q load
     Qsh[n]=busdata.iloc[k][6]/(10**3)  #injected Q from shunt capacitor
@@ -94,7 +96,7 @@ for k in range(nbus):
         Vm[n] = 1.0             
         V[n] = 1 + 1j*0
     else:
-    
+        delta[n] = np.pi/180*delta[n]
         V[n] = Vm[n]*(np.cos(delta[n]) + 1j*np.sin(delta[n]))
         #express P Bus in per units
         P[n]=(Pg[n]-Pd[n])/basemva 
@@ -121,13 +123,13 @@ m=2*nbus-ng-2*ns
 maxerror = 1
 converge=1
 iter = 0
-DC = np.zeros(m)      
+DC = np.zeros(m,dtype=complex)      
 J = np.zeros((m,m))
 # Start of iterations
 while maxerror >= accuracy and iter <= maxiter:
     # Test for max power mismatch
     #initializing Jacobian matrix
-    A = np.zeros((m,m))     
+    A = np.zeros((m,m),dtype=complex)     
     iter+=1
     for n in range(1, nbus+1):
         #when slack bus appears, it will eliminate slack bus components 
@@ -175,8 +177,8 @@ while maxerror >= accuracy and iter <= maxiter:
                     pass
             else:
                 pass
-        Pk = Vm[n-1]**2 * Ym[n-1][n-1] * math.cos((t[n-1][n-1]).real) + J33
-        Qk = -Vm[n-1]**2 * Ym[n-1][n-1] * math.sin((t[n-1][n-1]).real) - J11
+        Pk = Vm[n-1]**2 * Ym[n-1][n-1] * math.cos((t[n-1][n-1])) + J33
+        Qk = -Vm[n-1]**2 * Ym[n-1][n-1] * math.sin((t[n-1][n-1])) - J11
         if kb[n-1] == 3:
             # swing bus 
             P[n-1] = Pk
