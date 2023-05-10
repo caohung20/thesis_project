@@ -1,70 +1,115 @@
-# Power flow solution by Newton-Raphson method
+# Power flow solution by Gauss-Seidel method
 import psutil
 process = psutil.Process()
 print("Memory usage:", process.memory_info().rss)
 import numpy as np
-import lfybus
 import pandas as pd
+import math
 import cmath
-nbus=lfybus.nbus
-Ybus=lfybus.Ybus
-nbr=lfybus.nbr
-nl=lfybus.nl
-nr=lfybus.nr
+from scipy.sparse import csc_matrix
+#base power to convert to per unit
+basemva=100 
+accuracy=0.001
+#maximum of iteration
+maxiter=100 
+#base voltage to convert to per unit
+basevolt=12
+j = 1j   
+linedata=pd.read_excel("G:\do_an_tot_nghiep\input_test.xlsx",sheet_name = 1,skiprows=1)
+nl = linedata['FROMBUS'].values
+nr = linedata['TOBUS'].values
+R = linedata['R(Ohm)'].values
+X = linedata['X(Ohm)'].values
+Bc = j*linedata['B(microSiemens)'].values
+basemva=100
+basevolt=12
+zbase=basevolt**2/basemva
+#a = linedata['Line code and tap setting'].values
+nbr = len(linedata['FROMBUS'])
+print(nbr)
+nbus = max(max(nl), max(nr))
+Z=np.ones(nbr,dtype=complex)
+y = np.ones((nbr,1), dtype=complex)
+for i in range(0,nbr):
+    #convert to per unit system
+    Z[i]= (R[i] + j*X[i])/zbase
+    # defining branch admittance as complex
+    y[i]=y[i]/Z[i]
+    Bc[i]=Bc[i]/2*zbase*10**(-6)
+for n in range(nbr):
+    # initialize Ybus to zero
+    Ybus = np.zeros((int(nbus),int(nbus)), dtype=complex)  
+    
+    for k in range(nbr):
+        #[nl[k]-1] => correct position in Ybus
+        Ybus[nl[k]-1][nr[k]-1] = Ybus[nl[k]-1][nr[k]-1]  - y[k] #/ a[k] 
+        Ybus[nr[k]-1][nl[k]-1] = Ybus[nl[k]-1][nr[k]-1]
+#formation of the diagonal elements
+for n in range(nbus):
+    for k in range(nbr):
+        if nl[k] == n+1:
+            Ybus[n,n] += y[k] + Bc[k]
+        elif nr[k] == n+1:
+            Ybus[n,n] += y[k] + Bc[k]
+        else:
+            pass
+
+print(Ybus)
+#start gauss seidel program
 basemva=100 #base power to convert to per unit
 accuracy=0.001
+accel=1.8
 maxiter=100 #maximum of iteration
-ns=0
-ng=0
+busdata=pd.read_excel("G:\do_an_tot_nghiep\input_test.xlsx",sheet_name = 0,skiprows=1)
 Pgg=np.zeros(nbus,dtype=complex)
-Qgg=np.zeros(nbus,dtype=complex)
-ngs=np.zeros(nbus)
-nss=np.zeros(nbus)
-busdata=pd.read_excel("G:\do an tot nghiep\myExample.xlsx",sheet_name = 0)
 Vm=np.zeros(nbus,dtype=complex)
 delta=np.zeros(nbus,dtype=complex)
+Qgg=np.zeros(nbus,dtype=complex)
 yload=np.zeros(nbus,dtype=complex)
 deltad=np.zeros(nbus,dtype=complex)
-kb=np.zeros(nbus)
+kb=busdata['CODE'].values
 Pd=np.zeros(nbus)
 Qd=np.zeros(nbus)
 Pg=np.zeros(nbus,dtype=complex)
 Qg=np.zeros(nbus,dtype=complex)
-Qmin=np.zeros(nbus)
-Qmax=np.zeros(nbus)
+Qmin=busdata['QgenMin[kvar]'].values
+Qmax=busdata['QgenMax[kvar]'].values
 Qsh=np.zeros(nbus)
 V=np.zeros(nbus,dtype=complex)
 P=np.zeros(nbus,dtype=complex)
 Q=np.zeros(nbus,dtype=complex)
 S=np.zeros(nbus,dtype=complex)
 DV=np.zeros(nbus)
+DP=np.zeros(nbus,dtype=float)
+DQ=np.zeros(nbus,dtype=float)
 for k in range(nbus):
     n=int(busdata.iloc[k][0])
     n-=1
-    kb[n]=busdata.iloc[k][1]    #bus code
-    Vm[n]=busdata.iloc[k][2]    #voltage magnitude
-    delta[n]=busdata.iloc[k][3] #angle degree
-    Pd[n]=busdata.iloc[k][4]    #P load
-    Qd[n]=busdata.iloc[k][5]    #Q load
-    Pg[n]=busdata.iloc[k][6]    #P generator
-    Qg[n]=busdata.iloc[k][7]    #Q generator
-    Qmin[n]=busdata.iloc[k][8]  #Qmin generator
-    Qmax[n]=busdata.iloc[k][9]  #Qmax generator
-    Qsh[n]=busdata.iloc[k][10]  #injected Q from shunt capacitor
-    if Vm[n] <= 0:
-        Vm[n] = 1.0             #estimate flat start
+    Vm[n]=busdata.iloc[k][8]
+    Pd[n]=busdata.iloc[k][4]/(10**3)    #P load
+    Qd[n]=busdata.iloc[k][5]/(10**3)    #Q load
+    Qsh[n]=busdata.iloc[k][6]/(10**3)  #injected Q from shunt capacitor
+    if math.isnan(Qmax[n]):
+        Qmax[n]=0
+    if math.isnan(Qmin[n]):
+        Qmin[n]=0
+    #Vm is nan 
+    if Vm[n] <= 0 or math.isnan(Vm[n]):
+        #estimate flat start
+        Vm[n] = 1.0             
         V[n] = 1 + 1j*0
     else:
-        delta[n] = np.pi/180*delta[n]   #convert angle from degree to radian
+        delta[n] = np.pi/180*delta[n]
         V[n] = Vm[n]*(np.cos(delta[n]) + 1j*np.sin(delta[n]))
-        P[n]=(Pg[n]-Pd[n])/basemva      #express P Bus in per units
-        Q[n]=(Qg[n]-Qd[n]+ Qsh[n])/basemva  #express Q Bus in per units
-        S[n] = P[n] + 1j*Q[n]   
+        #express P Bus in per units
+        P[n]=(Pg[n]-Pd[n])/basemva 
+        #express Q Bus in per units     
+        Q[n]=(Qg[n]-Qd[n]+ Qsh[n])/basemva  
+        S[n] = P[n] + 1j*Q[n] 
 num = 0
 AcurBus = 0
 converge = 1
-Vc = np.zeros((nbus, 1), dtype=complex)
-Sc = np.zeros((nbus, 1), dtype=complex)   
+Vc = np.zeros((nbus, 1), dtype=complex)   
 #generate value if variable does not exist 
 while 'accel' not in locals():
     accel = 1.3
@@ -81,21 +126,20 @@ iter = 0
 maxerror = 10
 while maxerror >= accuracy and iter <= maxiter:
     iter += 1
-    import numpy as np
     for n in range(nbus):
         YV = 0 + 1j * 0
         for L in range(nbr):
-            if nl[L] == n:
-                k = nr[L]
+            if nl[L] == n+1:
+                k = nr[L]-1
                 YV += Ybus[n, k] * V[k]
-            elif nr[L] == n:
-                k = nl[L]
+            elif nr[L] == n+1:
+                k = nl[L]-1
                 YV += Ybus[n, k] * V[k]
         Sc = np.conj(V[n]) * (Ybus[n, n] * V[n] + YV)
         Sc = np.conj(Sc)
         DP[n] = P[n] - np.real(Sc)
         DQ[n] = Q[n] - np.imag(Sc)
-        if kb[n] == 1:
+        if kb[n] == 3:
             S[n] = Sc
             P[n] = np.real(Sc)
             Q[n] = np.imag(Sc)
@@ -121,11 +165,11 @@ while maxerror >= accuracy and iter <= maxiter:
                     pass
             else:
                 pass
-        if kb[n] != 1:
+        if kb[n] != 3:
             Vc[n] = (np.conj(S[n]) / np.conj(V[n]) - YV) / Ybus[n, n]
         else:
             pass
-        if kb[n] == 0:
+        if kb[n] == 1:
             V[n] = V[n] + accel * (Vc[n] - V[n])
         elif kb[n] == 2:
             VcI = np.imag(Vc[n])
@@ -147,7 +191,7 @@ k = 0
 for n in range(nbus):
     Vm[n] = abs(V[n])
     deltad[n] = cmath.phase(V[n]) * 180 / cmath.pi
-    if kb[n] == 1:
+    if kb[n] == 3:
         S[n] = P[n] + 1j * Q[n]
         Pg[n] = P[n] * basemva + Pd[n]
         Qg[n] = Q[n] * basemva + Qd[n] - Qsh[n]
@@ -165,7 +209,88 @@ Qgt = sum(Qg)
 Pdt = sum(Pd)
 Qdt = sum(Qd)
 Qsht = sum(Qsh)
-busdata[:, 2] = Vm
-busdata[:, 3] = deltad
+SLT = 0
+#######################################################################
+#print bus out
+print(tech)
+print('                      Maximum Power Mismatch = %g \n' % maxerror)
+print('                             No. of Iterations = %g \n\n' % iter)
 
-    
+head = [    '    Bus  Voltage  Angle    ------Load------    ---Generation---   Injected',    '    No.  Mag.     Degree     MW       Mvar       MW       Mvar       Mvar ',    '                                                                          ']
+print('\n'.join(head))
+
+for n in range(nbus):
+    print(' %5g' % n, end='')
+    print(' %7.3f' % Vm[n].real, end=' ')
+    print(' %8.3f' % deltad[n].real, end=' ')
+    print(' %9.3f' % Pd[n], end=' ')
+    print(' %9.3f' % Qd[n], end=' ')
+    print(' %9.3f' % Pg[n].real, end=' ')
+    print(' %9.3f ' % Qg[n].real, end=' ')
+    print(' %8.3f' % Qsh[n])
+
+print('      ')
+print('    Total              ', end=' ')
+print(' %9.3f' % Pdt, end=' ')
+print(' %9.3f' % Qdt, end=' ')
+print(' %9.3f' % Pgt.real, end=' ')
+print(' %9.3f' % Qgt.real, end=' ')
+print(' %9.3f\n\n' % Qsht)
+#######################################################################################
+print('\n')
+print('                           Line Flow and Losses \n\n')
+print('     --Line--  Power at bus & line flow    --Line loss--\n')
+print('     from  to    MW      Mvar     MVA       MW      Mvar\n')
+
+for n in range(nbus):
+    busprt = 0
+    for L in range(nbr):
+        if busprt == 0:
+            print('   \n'), 
+            print('%6g' % (n+1), end='')
+            print('      %9.3f' % (P[n]*basemva).real, end='')
+            print('%9.3f' % (Q[n]*basemva).real, end='')
+            print('%9.3f\n' % (abs(S[n]*basemva)), end='')
+
+            busprt = 1
+        else:
+            pass
+
+        if nl[L] == n+1:
+            k = nr[L]
+            In = (V[n] - V[k-1])*y[L] + Bc[L]*V[n]
+            Ik = (V[k-1] - V[n])*y[L] + Bc[L]*V[k-1]
+            Snk = V[n]*np.conj(In)*basemva
+            Skn = V[k-1]*np.conj(Ik)*basemva
+            SL  = Snk + Skn
+            SLT = SLT + SL
+        elif nr[L] == n+1:
+            k = nl[L]
+            In = (V[n] - V[k-1])*y[L] + Bc[L]*V[n]
+            Ik = (V[k-1] - V[n])*y[L] + Bc[L]*V[k-1]
+            Snk = V[n]*np.conj(In)*basemva
+            Skn = V[k-1]*np.conj(Ik)*basemva
+            SL  = Snk + Skn
+            SLT = SLT + SL
+        else:
+            pass
+
+        if nl[L] == n+1 or nr[L] == n+1:
+            print('%12g' % k, end='')
+            print('%9.3f' % Snk.real, end='')
+            print('%9.3f' % Snk.imag, end='')
+            print('%9.3f' % abs(Snk), end='')
+            print('%9.3f' % SL.real, end='')
+
+            if nl[L] == n+1:
+                print('%9.3f\n' % SL.imag, end='')
+            else:
+                print('%9.3f\n' % SL.imag, end='')
+        else:
+            pass
+
+SLT = SLT/2
+print('   \n'), 
+print('    Total loss                         ', end='')
+print('%9.3f' % SLT.real, end='')
+print('%9.3f\n' % SLT.imag, end='')
