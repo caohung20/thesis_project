@@ -45,7 +45,7 @@ def accur(U1,U2):
 #####################################################################
 #calculate power summation necessary parameter
 j = 1j   
-linedata=pd.read_excel("G:\do_an_tot_nghiep\input_test.xlsx",sheet_name = 1,skiprows=1)
+linedata=pd.read_excel("G:\do_an_tot_nghiep\input3bus.xlsx",sheet_name = 1,skiprows=1)
 nl = linedata['FROMBUS'].values
 nr = linedata['TOBUS'].values
 R = linedata['R(Ohm)'].values
@@ -102,10 +102,10 @@ for n in range(nbus):
 dictionary={1:[1, 2, 3, 4, 5, 6],2:[1, 2, 3, 4, 9],3:[1, 2, 7, 8]}
 Snode=np.zeros(nbus,dtype=complex)
 Sline=np.zeros((nbus,nbus),dtype=complex)
-busdata=pd.read_excel("G:\do_an_tot_nghiep\input_test.xlsx",sheet_name = 0,skiprows=1)
+busdata=pd.read_excel("G:\do_an_tot_nghiep\input3bus.xlsx",sheet_name = 0,skiprows=1)
 kb=busdata['CODE'].values
-Pd=busdata['PLOAD[kw]'].values
-Qd=busdata['QLOAD[kvar]'].values
+Pd=np.zeros(nbus,dtype=float)
+Qd=np.zeros(nbus,dtype=float)
 Pg=np.zeros(nbus)
 Qg=np.zeros(nbus)
 Qsh=np.zeros(nbus,dtype=float)
@@ -116,16 +116,19 @@ for k in range(nbus):
     n=int(busdata.iloc[k][0])
     n-=1
     V[n]=busdata.iloc[k][8]
+    Pd[n]=busdata.iloc[k][4]/(10**3)    #P load
     Qsh[n]=busdata.iloc[k][6]/(10**3)
+    Qd[n]=busdata.iloc[k][5]/(10**3)    #Q load
+    Qsh[n]=busdata.iloc[k][6]/(10**3)  #injected Q from shunt capacitor
 Sd=np.zeros(nbus,dtype=complex)
 basemva=100
 j=1j
 for i in range(len(Pd)):
-    Sd[i]=(Pd[i]+Qd[i]*j)/(basemva*10**(3))
+    Sd[i]=(Pd[i]+Qd[i]*j-Qsh[i]*j)/(basemva)
 
 #in backward sweep, it will delete global dictionary so it's necessary to save and return dict
 maxiter=100
-accuracy=0.0001
+accuracy=0.00001
 converge=1
 maxerror=10
 iter=0
@@ -154,7 +157,7 @@ deltad=np.zeros(nbus)
 S=Snode
 k = 0
 for n in range(nbus):
-    
+    deltad[n] = cmath.phase(V[n]) * 180 / cmath.pi
     if kb[n] == 3:
         k += 1
         P[n]=S[n].real
