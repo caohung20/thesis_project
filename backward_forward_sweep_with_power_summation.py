@@ -1,40 +1,24 @@
 #power summation with first node is a gen in first node
 import pandas as pd
 import numpy as np
-import numpy as np
 import copy
-def firstEndnode(my_dict):
-    #find first endnode
-    firstE=set()
-    for key in my_dict:
-        leng=len(my_dict[key])
-        firstE.add(my_dict[key][leng-1])
-    return firstE
+import cmath
 #########################################################
-def backwardsweep(endnode,dictionary):
+def backwardsweep(dictionary):
 #calculate from endnode Snode and sweep until dictionary empty
-    if  not endnode:
-        return 
-    else:
-        for i in endnode: 
-            for key in dictionary:
-                leng=len(dictionary[key])
-                if leng!=0:
-                #check if leng !=0 continue process
-                    if i==dictionary[key][leng-1]:
-                        #check if dictionary[key] contains i
-                        Snode[i-1]=Sd[i-1]+sum(Sline[i-1][:])+np.conj(B[i-1]*j)*(U[i-1]**2)
-                        if leng>1:
-                            Sline[dictionary[key][leng-2]-1][i-1]=Zbus[dictionary[key][leng-2]-1][i-1]*(Snode[i-1]/U[i-1])**2 + Snode[i-1]
-                        if leng!=0:   
-                            dictionary[key].remove(i)
-        endnode.clear()
-        for key in dictionary:
-            leng=len(dictionary[key])
-            if leng!=0:
-                #add new endnode to set
-                endnode.add(dictionary[key][leng-1])
-        backwardsweep(endnode,dictionary)
+    for key in dictionary:
+        leng=len(dictionary[key])
+        for indice in range(leng-1,-1,-1):  
+            last_item=dictionary[key][indice]-1
+            Snode[last_item]=Sd[last_item]+sum(Sline[last_item][:])+np.conj(B[last_item])*(V[last_item]**2)
+            print('S2phay(%i)'%last_item,"=Sd(%i)"%last_item,'Sline[%i][:]'%last_item,)
+            if indice!=0:
+                second_last=dictionary[key][indice-1]-1
+                Sline[second_last][last_item]=Zbus[second_last][last_item]*(Snode[last_item]/V[last_item])**2 + Snode[last_item]
+                print('Sphay(%i)='%second_last,'(%i)'%last_item,'Zbus[%i]'%second_last,'[%i]'%last_item,'*(Snode[%i]'%last_item,'/U[%i])**2'%last_item, "+ Snode[%i]"%last_item  )
+    return
+    
+
 #################################################################
 def forwardsweep(my_dict):
 #calculate forward sweep
@@ -43,9 +27,11 @@ def forwardsweep(my_dict):
             if value==my_dict[key][0]:
                 prevalue=value
             else:
-                U[value-1]=U[prevalue-1]-np.conj(Sline[prevalue-1][value-1]/U[prevalue-1])*Zbus[prevalue-1][value-1]
+                V[value-1]=V[prevalue-1]-np.conj(Sline[prevalue-1][value-1]/V[prevalue-1])*Zbus[prevalue-1][value-1]
+                #print("U(%i)" %value,"=U(%i)" %prevalue,"-Sline(%i)" %prevalue,"(%i)" %value)
                 prevalue=value
     return
+###################################################################################
 def accur(U1,U2):
 #calculate voltage mismatch and return biggest value
     epsilon=0
@@ -56,6 +42,8 @@ def accur(U1,U2):
             if epsilon < abs(U1[i].imag-U2[i].imag):
                 epsilon=abs(U1[i].imag-U2[i].imag)
     return epsilon
+#####################################################################
+#calculate power summation necessary parameter
 j = 1j   
 linedata=pd.read_excel("G:\do_an_tot_nghiep\input_test.xlsx",sheet_name = 1,skiprows=1)
 nl = linedata['FROMBUS'].values
@@ -64,13 +52,38 @@ R = linedata['R(Ohm)'].values
 X = linedata['X(Ohm)'].values
 Bc = j*linedata['B(microSiemens)'].values
 basemva=100
-basevolt=110
-zbase=basevolt**2/basemva
+basevolt=12
+zbase=((basevolt**2))/basemva
 nbr = len(linedata['FROMBUS'])
 print(nbr)
-nbus = max(max(nl), max(nr))
+nbus = max(max(nl),max(nr))
 B=np.zeros(nbus,dtype=complex)
-Zbus = np.zeros((int(nbus),int(nbus)), dtype=complex) 
+Zbus = np.zeros((int(nbus),int(nbus)), dtype=complex)
+Z=np.ones(nbr,dtype=complex)
+y = np.ones((nbr,1), dtype=complex)
+for i in range(0,nbr):
+    #convert to per unit system
+    Z[i]= (R[i] + j*X[i])/zbase
+    # defining branch admittance as complex
+    y[i]=y[i]/Z[i]
+    Bc[i]=Bc[i]/2*zbase*10**(-6)
+for n in range(nbr):
+    # initialize Ybus to zero
+    Ybus = np.zeros((int(nbus),int(nbus)), dtype=complex)  
+    
+    for k in range(nbr):
+        #[nl[k]-1] => correct position in Ybus
+        Ybus[nl[k]-1][nr[k]-1] = Ybus[nl[k]-1][nr[k]-1]  - y[k] #/ a[k] 
+        Ybus[nr[k]-1][nl[k]-1] = Ybus[nl[k]-1][nr[k]-1]
+#formation of the diagonal elements
+for n in range(nbus):
+    for k in range(nbr):
+        if nl[k] == n+1:
+            Ybus[n,n] += y[k] + Bc[k]
+        elif nr[k] == n+1:
+            Ybus[n,n] += y[k] + Bc[k]
+        else:
+            pass 
 for i in range(0,nbr):
     #convert to per unit system
     Zbus[nl[i]-1][nr[i]-1]= (R[i] + j*X[i])/zbase
@@ -87,19 +100,23 @@ for n in range(nbus):
         else:
             pass
 dictionary={1:[1, 2, 3, 4, 5, 6],2:[1, 2, 3, 4, 9],3:[1, 2, 7, 8]}
-endnode=firstEndnode(dictionary)
-firstEndnode_store=copy.deepcopy(endnode)
 Snode=np.zeros(nbus,dtype=complex)
 Sline=np.zeros((nbus,nbus),dtype=complex)
 busdata=pd.read_excel("G:\do_an_tot_nghiep\input_test.xlsx",sheet_name = 0,skiprows=1)
+kb=busdata['CODE'].values
 Pd=busdata['PLOAD[kw]'].values
 Qd=busdata['QLOAD[kvar]'].values
-U = np.zeros(nbus,dtype=complex)
+Pg=np.zeros(nbus)
+Qg=np.zeros(nbus)
+Qsh=np.zeros(nbus,dtype=float)
+V = np.zeros(nbus,dtype=complex)
+P=np.zeros(nbus,dtype=complex)
+Q=np.zeros(nbus,dtype=complex)
 for k in range(nbus):
     n=int(busdata.iloc[k][0])
     n-=1
-    U[n]=busdata.iloc[k][8]
-
+    V[n]=busdata.iloc[k][8]
+    Qsh[n]=busdata.iloc[k][6]/(10**3)
 Sd=np.zeros(nbus,dtype=complex)
 basemva=100
 j=1j
@@ -107,7 +124,6 @@ for i in range(len(Pd)):
     Sd[i]=(Pd[i]+Qd[i]*j)/(basemva*10**(3))
 
 #in backward sweep, it will delete global dictionary so it's necessary to save and return dict
-stor_dict=copy.deepcopy(dictionary)
 maxiter=100
 accuracy=0.0001
 converge=1
@@ -115,13 +131,11 @@ maxerror=10
 iter=0
 while maxerror >= accuracy and iter <= maxiter:
     iter+=1
-    backwardsweep(endnode,dictionary)
+    backwardsweep(dictionary)
     #copy value of U bc backward sweep will change value of U
-    Ustor=copy.deepcopy(U)
-    dictionary=copy.deepcopy(stor_dict)
-    endnode=copy.deepcopy(firstEndnode_store)
+    Vstor=copy.deepcopy(V)
     forwardsweep(dictionary)
-    maxerror=accur(U,Ustor)
+    maxerror=accur(V,Vstor)
     Sline=np.zeros((nbus,nbus),dtype=complex)
     if iter == maxiter and maxerror > accuracy:
         print('\nWARNING: Iterative solution did not converge after', iter, 'iterations.\n\n')
@@ -134,22 +148,108 @@ if converge != 1:
     tech = '                      ITERATIVE SOLUTION DID NOT CONVERGE'
 else:
     tech = '                   Power Flow Solution by Power Summation Method'
-
-print(Snode)             
-print(abs(U))
-###############################################
-
-def createLayer(my_dic):
-    #create a dictionary of layer from the dfs search dictionary
-    max_len = max(len(s) for s in my_dic.values())
-    layer=dict()
-    for i in range(max_len-1,-1,-1):
-        layer[i]=list()
-        for k in my_dic.keys():
-            if len(my_dic[k])==(i+1):
-                #add last item of dictionary[k] to layer[i]
-                last_item = my_dic[k].pop()
-                layer[i].append(last_item)
-    return layer
-
+print(Snode)
+Vm=abs(V)
+deltad=np.zeros(nbus)
+S=Snode
+k = 0
+for n in range(nbus):
     
+    if kb[n] == 3:
+        k += 1
+        P[n]=S[n].real
+        Q[n]=S[n].imag
+        Pg[n] = P[n] * basemva + Pd[n]
+        Qg[n] = Q[n] * basemva + Qd[n] - Qsh[n]
+        
+Pgt = sum(Pg)
+Qgt = sum(Qg)
+Pdt = sum(Pd)
+Qdt = sum(Qd)
+Qsht = sum(Qsh)
+#S loss total
+SLT = 0
+#######################################################################
+#print bus out
+print(tech)
+print('                      Maximum Power Mismatch = %g \n' % maxerror)
+print('                             No. of Iterations = %g \n\n' % iter)
+
+head = [    '    Bus  Voltage  Angle    ------Load------    ---Generation---   Injected',    '    No.  Mag.     Degree     MW       Mvar       MW       Mvar       Mvar ',    '                                                                          ']
+print('\n'.join(head))
+
+for n in range(nbus):
+    print(' %5g' % n, end='')
+    print(' %7.3f' % Vm[n].real, end=' ')
+    print(' %8.3f' % deltad[n].real, end=' ')
+    print(' %9.3f' % Pd[n], end=' ')
+    print(' %9.3f' % Qd[n], end=' ')
+    print(' %9.3f' % Pg[n].real, end=' ')
+    print(' %9.3f ' % Qg[n].real, end=' ')
+    print(' %8.3f' % Qsh[n])
+
+print('      ')
+print('    Total              ', end=' ')
+print(' %9.3f' % Pdt, end=' ')
+print(' %9.3f' % Qdt, end=' ')
+print(' %9.3f' % Pgt.real, end=' ')
+print(' %9.3f' % Qgt.real, end=' ')
+print(' %9.3f\n\n' % Qsht)
+#######################################################################################
+print('\n')
+print('                           Line Flow and Losses \n\n')
+print('     --Line--  Power at bus & line flow    --Line loss--\n')
+print('     from  to    MW      Mvar     MVA       MW      Mvar\n')
+
+for n in range(nbus):
+    busprt = 0
+    for L in range(nbr):
+        if busprt == 0:
+            print('   \n'), 
+            print('%6g' % (n+1), end='')
+            print('      %9.3f' % (P[n]*basemva).real, end='')
+            print('%9.3f' % (Q[n]*basemva).real, end='')
+            print('%9.3f\n' % (abs(S[n]*basemva)), end='')
+
+            busprt = 1
+        else:
+            pass
+
+        if nl[L] == n+1:
+            k = nr[L]
+            In = (V[n] - V[k-1])*y[L] + Bc[L]*V[n]
+            Ik = (V[k-1] - V[n])*y[L] + Bc[L]*V[k-1]
+            Snk = V[n]*np.conj(In)*basemva
+            Skn = V[k-1]*np.conj(Ik)*basemva
+            SL  = Snk + Skn
+            SLT = SLT + SL
+        elif nr[L] == n+1:
+            k = nl[L]
+            In = (V[n] - V[k-1])*y[L] + Bc[L]*V[n]
+            Ik = (V[k-1] - V[n])*y[L] + Bc[L]*V[k-1]
+            Snk = V[n]*np.conj(In)*basemva
+            Skn = V[k-1]*np.conj(Ik)*basemva
+            SL  = Snk + Skn
+            SLT = SLT + SL
+        else:
+            pass
+
+        if nl[L] == n+1 or nr[L] == n+1:
+            print('%12g' % k, end='')
+            print('%9.3f' % Snk.real, end='')
+            print('%9.3f' % Snk.imag, end='')
+            print('%9.3f' % abs(Snk), end='')
+            print('%9.3f' % SL.real, end='')
+
+            if nl[L] == n+1:
+                print('%9.3f\n' % SL.imag, end='')
+            else:
+                print('%9.3f\n' % SL.imag, end='')
+        else:
+            pass
+
+SLT = SLT/2
+print('   \n'), 
+print('    Total loss                         ', end='')
+print('%9.3f' % SLT.real, end='')
+print('%9.3f\n' % SLT.imag, end='')
