@@ -1,17 +1,16 @@
 import pandas as pd
 import numpy as np
 import math
-import copy
 #class line:
 
 def returnactiveline(arr1,arr2,func_flag):
     #eliminate off line to 
     flagoff=0
     while flagoff in func_flag:
-        for i in range(len(func_flag)):
+        for i,flagvalue in enumerate(func_flag):
             if i>=len(func_flag):
                 break
-            if func_flag[i]==0:
+            if flagvalue==0:
                 arr1=np.delete(arr1,i)
                 arr2=np.delete(arr2,i)
                 func_flag=np.delete(func_flag,i)
@@ -24,8 +23,8 @@ def stateofbus(num):
     global count
     if num>=1:
         flag[changeableline[count]]=num%2
+        count+=1
         stateofbus(num//2)
-    count+=1
     return
 
 def searchList(arr1, arr2, root):
@@ -68,7 +67,7 @@ def searchList(arr1, arr2, root):
 
 def dfs(arr1, arr2, root, check, count):
     #depth first search
-    if check == False:
+    if check is False:
         #variable count to eliminate cases when it retreats branch
         if count==0:
             #print(visited)
@@ -96,6 +95,10 @@ def checkisland(island,my_dict):
         for value in my_dict[key]:
             if value in island:
                 island.discard(value)
+            if len(my_dict[key])==1:
+                check=True
+                return check
+
     if not island:
         check=False
     else:
@@ -141,8 +144,7 @@ if __name__ == "__main__":
     for i in range(nbus):
         if Qmin[i]!=0 and not math.isnan(Qmin[i]):
             gen.append(i+1)
-    
-    iter=0  
+ 
     for deci in range(2**(len(changeableline))):
         #initialized island
         island =  {n+1 for n in range(nbus)} 
@@ -173,4 +175,3 @@ if __name__ == "__main__":
                     pass
                 else: 
                     print('this config can calculate:',config)
-
