@@ -10,6 +10,7 @@ about: ....
 import os,time,math
 import openpyxl,csv
 import argparse
+import numpy as np 
 PARSER_INPUTS = argparse.ArgumentParser(epilog= "")
 PARSER_INPUTS.usage = 'Distribution network analysis Tools'
 PARSER_INPUTS.add_argument('-fi' , help = '*(str) Input file path' , default = '',type=str,metavar='')
@@ -153,6 +154,7 @@ def add2CSV(nameFile,ares,delim):
                 ew.writerow(a1)
 #
 class POWERFLOW:
+    #assume that bus number are increasing
     def __init__(self,fi):
         self.tcheck = 0
         wbInput = openpyxl.load_workbook(os.path.abspath(fi),data_only=True)
@@ -170,6 +172,7 @@ class POWERFLOW:
         self.BUS = {}
         self.busSlack = []
         self.BUSbs = {} #shunt
+        self.Qsh = {}
         for i in range(len(busa['NO'])):
             if busa['FLAG'][i]:
                 n1 = busa['NO'][i]
@@ -179,6 +182,7 @@ class POWERFLOW:
                 qsh = busa['Qshunt[kvar]'][i]/1000
                 if abs(qsh)>1e-6:
                     self.BUSbs[n1] = qsh
+                    self.Qsh[n1] = qsh
                 #
                 c1 = busa['CODE'][i]
                 if c1==None:
@@ -269,6 +273,8 @@ class POWERFLOW:
         self.bus0ISL = set(busc1.keys())
         self.busISL = self.setBusHnd - self.bus0ISL
         #print(self.lineISL) # line ko the off, off=>island
+        #assume that only take circumstances where there is no island bus to calculate power flow
+        self.nBus = len(self.setBusHnd)
         #print('busISL',self.busISL)   # bus con lai sau khi da bo line island, dung de check loop
     #
     def getLineFlag3(self):
@@ -335,6 +341,12 @@ class POWERFLOW:
         """ run PF 1 config """
         if self.setting['Algo_PF']=='PSM':
             return self.__run1ConfigPSM__(lineOff,shuntOff,fo)
+        elif self.setting['Algo_PF']=='N-R':
+            return self.__run1configNR__(lineOff,shuntOff,fo)
+        elif self.setting['Algo_PF'] == 'GS':
+            return self.__run1configGS__(lineOff,shuntOff,fo)
+        elif self.setting['Algo_PF'] == 'SNR':
+            return self.__run1configSNR__(lineOff,shuntOff,fo)
         return None
     #
     def __run1ConfigPSM__(self,lineOff,shuntOff,fo=''):
@@ -525,8 +537,11 @@ class POWERFLOW:
         self.ordc,self.ordv = [],[]
         for bs1 in self.busGroup:
             busC1 = {k:v for k,v in busC.items() if k in bs1}
+            #bus already
             balr = {h1:True for h1 in bs1}
+            #set order
             sord = set()
+            #order compute
             ordc1 = []
             for k,v in busC1.items():
                 if len(v[1])==0:
@@ -576,7 +591,7 @@ class POWERFLOW:
         if lineOff.intersection(self.lineSureISL):
             return 'ISLAND'
         #
-        self.setLineHnd = self.setLineHndAll-lineOff
+        self.setLineHnd = self.setLineHndAll - lineOff
         #
         self.lineC = {k:self.LINE[k][:2] for k in self.setLineHnd}
         self.busC = {b1:set() for b1 in self.setBusHnd}
@@ -645,35 +660,787 @@ class POWERFLOW:
                         res[s2] = [float(si) for si in sa]
                 break
         return res
+    
+    def __calculateYbus__(self,lineOff,shuntOff):
+        self.setLineHnd = self.setLineHndAll - lineOff
+        self.setLinebHnd = self.LINEb.keys() - lineOff
+        #initialize Ybus
+        Ybus = []
+        for _ in range(self.nBus):
+            row = [0] * self.nBus
+            Ybus.append(row)
+        #initialize branch admittance
+        y = {k:(1+0j) for k in self.setLineHnd}
+        #formation of the off diagonal elements
+        for k,v in self.lineC.items():
+                y[k] = y[k]/self.LINE[k][2]
+                Ybus[v[0]-1][v[1]-1] = -y[k]
+                Ybus[v[1]-1][v[0]-1] = Ybus[v[0]-1][v[1]-1]
+        #calculate yline with lineb: 
+        for lbi in self.setLinebHnd:
+            y[lbi] += self.LINEb[lbi]*1j
+        #formation of the diagonal elements
+        for bi in self.busC.keys():
+            for li in self.busC[bi]:
+                Ybus[bi-1][bi-1] +=  y[li]
+        # Shunt 
+        for k1,v1 in self.BUSbs.items():
+            if k1 not in shuntOff:
+                Ybus[k1,k1] += v1*1j
+        return Ybus
+
+    def __calculate_sparse_Ybus__(self,lineOff,shuntOff):    
+        self.setLineHnd = self.setLineHndAll - lineOff
+        self.setLinebHnd = self.LINEb.keys() - lineOff
+        sparse_ybus = dict()
+        #initialize branch admittance
+        y = {k:(1+0j) for k in self.setLineHnd}
+        #formation of the off diagonal elements
+        for k,v in self.lineC.items():
+            y[k] = y[k]/self.LINE[k][2]
+            sparse_ybus[frozenset({v[0],v[1]})] = -y[k]   
+        #calculate yline with lineb: 
+        for lbi in self.setLinebHnd:
+            y[lbi] += self.LINEb[lbi]*1j
+        # Shunt 
+        for k1,v1 in self.BUSbs.items():
+            if k1 not in shuntOff:
+                sparse_ybus[k1] = v1*1j
+        #formation of the diagonal elements
+        for bi in self.busC.keys():
+            for li in self.busC[bi]:
+                if bi not in sparse_ybus:
+                    sparse_ybus[bi] =  y[li]
+                else:
+                    sparse_ybus[bi] +=  y[li]
+        return sparse_ybus
+
+    def __run1configGS__(self,lineOff,shuntOff,fo=''):
+        t0 = time.time()
+        #
+        c1 = self.__checkLoopIsland__(lineOff)
+        self.tcheck+=time.time()-t0
+        if c1:
+            return {'FLAG':c1}
+        # ready to run Gauss Seidel
+        Ybus = self.__calculate_sparse_Ybus__(lineOff,shuntOff)
+        #
+        res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
+         #
+        if fo:
+            add2CSV(fo,[[],[time.ctime()],['PF 1Profile','lineOff',str(list(lineOff)),'shuntOff',str(list(shuntOff))]],',')
+            #
+            rB = [[],['BUS/Profile']]
+            rB[1].extend([bi for bi in self.lstBusHnd])
+            #
+            rL = [[],['LINE/Profile']]
+            rL[1].extend([bi for bi in self.lstLineHnd])
+            #
+            rG = [[],['GEN/Profile']]
+            for bi in self.busSlack:
+                 rG[1].append(str(bi)+'_P')
+                 rG[1].append(str(bi)+'_Q')
+                 rG[1].append(str(bi)+'_cosPhi')
+        va,ra,cosP,cosN = [],[],[1],[-1]
+        accel = self.setting['accel']
+        for pi in self.profileID:
+            P = {bi:(-self.loadProfile[pi][bi]).real for bi in self.setBusHnd}    #+self.Pgen
+            Q = {bi:(-self.loadProfile[pi][bi]).imag for bi in self.setBusHnd}    #+self.Qgen
+            DP = {bi:0 for bi in self.setBusHnd}
+            DQ = {bi:0 for bi in self.setBusHnd}
+            sbus = {bi:(P[bi] + Q[bi]*1j) for bi in self.setBusHnd}
+            vbus = {bi:complex(self.Ubase,0) for bi in self.setBusHnd}
+            # initialize voltage correction
+            Vc = {bi:complex(0,0) for bi in self.setBusHnd}
+            # update Vm of slack buses
+            for bs in self.setSlack:
+                vbus[bs] = complex(self.genProfile[pi][bs],0) 
+            Vm = {bi:abs(vbus[bi])for bi in self.setBusHnd}
+            sa1,dia1,va1 = dict(),dict(),dict() # for 1 profile
+            for ii in range(self.iterMax+1):
+                for b1 in self.setBusHnd:
+                    YV = 0 + 1j * 0
+                    for li in self.busC[b1]:
+                        for b2 in self.lineC[li]:
+                            if b1 == b2:
+                                pass
+                            else:
+                                line = frozenset({b1,b2})
+                                YV += Ybus[line] * vbus[b2]
+                    Sc = np.conj(vbus[b1]) * (Ybus[b1] * vbus[b1] + YV)
+                    Sc = np.conj(Sc)
+                    DP[b1] = P[b1] - np.real(Sc)
+                    DQ[b1] = Q[b1] - np.imag(Sc)
+                    if self.BUS[b1][3] == 3:
+                        sbus[b1] = Sc
+                        P[b1] = np.real(Sc)
+                        Q[b1] = np.imag(Sc)
+                        DP[b1] = 0
+                        DQ[b1] = 0
+                        Vc[b1] = vbus[b1]
+                    elif self.BUS[b1][3] == 2:
+                        Q[b1] = np.imag(Sc)
+                        sbus[b1] = P[b1] + 1j * Q[b1]
+                        """
+                        if Qmax[n] != 0:
+                            Qgc = Q[n] * basemva + Qd[n] - Qsh[n]
+                            if abs(DQ[n]) <= 0.005 and iter >= 10:
+                                if DV[n] <= 0.045:
+                                    if Qgc < Qmin[n]:
+                                        Vm[n] += 0.005
+                                        DV[n] += 0.005
+                                    elif Qgc > Qmax[n]:
+                                        Vm[n] -= 0.005
+                                        DV[n] += 0.005
+                                else:
+                                    pass
+                            else:
+                                pass
+                        else:
+                            pass
+                        """
+                    if self.BUS[b1][3] != 3:
+                        Vc[b1] = (np.conj(sbus[b1]) / np.conj(vbus[b1]) - YV) / Ybus[b1]
+                    else:
+                        pass
+                    if self.BUS[b1][3] == 1:
+                        vbus[b1] = vbus[b1] + accel * (Vc[b1] - vbus[b1])
+                    elif self.BUS[b1][3] == 2:
+                        VcI = np.imag(Vc[b1])
+                        VcR = np.sqrt(Vm[b1] ** 2 - VcI ** 2)
+                        Vc[b1] = VcR + 1j * VcI
+                        vbus[b1] = vbus[b1] + accel * (Vc[b1] - vbus[b1])
+                maxerror = abs(DP[b1])
+                for bi in self.setBusHnd:
+                    if abs(DP[bi]) > maxerror:
+                        maxerror = abs(DP[bi])
+                    if abs(DQ[bi]) > maxerror:
+                        maxerror = abs(DQ[bi])
+                if maxerror < self.epsilon:
+                    break
+                if ii==self.iterMax:
+                    return {'FLAG':'DIVERGENCE'}
+            # finish GS
+            # store all voltage magnitude value in all profile
+            Vm = {bi:abs(vbus[bi]) for bi in self.setBusHnd}
+            va.extend(Vm.values())
+            for bi in self.busSlack:
+                sbus[bi] += self.loadProfile[pi][bi]
+            """
+            for bi in self.busPV:
+                # update Q load in PV bus
+                sbus[bi] += self.loadProfile[pi][bi].imag * 1j 
+            """
+            slt = 0
+            Il = dict()
+            for li,bi in self.lineC.items():
+                line = frozenset({bi[0],bi[1]})
+                Ib1 = (vbus[bi[0]]-vbus[bi[1]])*(-Ybus[line])
+                Ib2 = (vbus[bi[1]]-vbus[bi[0]])*(-Ybus[line])
+                #
+                if abs(Ib1) >= abs(Ib2):
+                    Il[li] = abs(Ib1)
+                else: 
+                    Il[li] = abs(Ib2)   
+
+                rate = ((Il[li])/self.LINE[li][3])*RATEC
+                ra.append(rate)
+                
+                Snk = vbus[bi[0]]*np.conj(Ib1)
+                Skn = vbus[bi[1]]*np.conj(Ib2)
+                slt += Snk +Skn
+            
+            if fo:
+                va1.update(vbus)
+                dia1.update(Il)
+                sa1.update(sbus)
+            for bs in self.busSlack:
+                if sbus[bs].imag:
+                    cosP.append(sbus[bs].real/abs(sbus[bs]))
+                else:
+                    cosN.append(-sbus[bs].real/abs(sbus[bs]))
+            if fo:
+                rb1 = [pi]
+                rl1 = [pi]
+                rg1 = [pi]
+                for bi1 in self.lstBusHnd:
+                    rb1.append(toString(abs(va1[bi1])/self.Ubase))
+                #
+                for bri in self.lstLineHnd:
+                    try:
+                        r1 = abs(Il[bri])/self.LINE[bri][3]*RATEC
+                        rl1.append( toString(r1,2) )
+                    except:
+                        rl1.append('0')
+                #
+                for bs1 in self.busSlack:
+                    rg1.append(toString(sa1[bs1].real))
+                    rg1.append(toString(sa1[bs1].imag))
+                    if sa1[bs1].imag>=0:
+                        rg1.append(toString(sa1[bs1].real/abs(sa1[bs1]),3))
+                    else:
+                        rg1.append(toString(-sa1[bs1].real/abs(sa1[bs1]),3))
+                #
+                rB.append(rb1)
+                rL.append(rl1)
+                rG.append(rg1)
+            res['DeltaA'] += slt.real 
+        #
+        res['Umax[pu]'] = max(va)/self.Ubase
+        res['Umin[pu]'] = min(va)/self.Ubase
+        res['RateMax[%]'] = max(ra)
+        res['cosP'] = min(cosP)
+        res['cosN'] = max(cosN)
+        
+        #
+        if fo:
+            rB.append(['','Umax[pu]',toString(res['Umax[pu]']),'Umin[pu]',toString(res['Umin[pu]']) ])
+            add2CSV(fo,rB,',')
+            #
+            rL.append(['','RateMax[%]',toString(res['RateMax[%]'],2)])
+            add2CSV(fo,rL,',')
+            #
+            rG.append(['','cosPmin',toString(res['cosP'],3),'cosNMax',toString(res['cosN'],3)])
+            add2CSV(fo,rG,',')
+        #
+        return res         
+
+
+    def __run1configSNR__(self,lineOff,shuntOff,fo=''):
+        t0 = time.time()
+        #
+        c1 = self.__checkLoopIsland__(lineOff)
+        self.tcheck+=time.time()-t0
+        if c1:
+            return {'FLAG':c1}
+        # ready to run Newton raphson
+        Ybus = self.__calculate_sparse_Ybus__(lineOff,shuntOff)
+        #
+        res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
+        #
+        if fo:
+            add2CSV(fo,[[],[time.ctime()],['PF 1Profile','lineOff',str(list(lineOff)),'shuntOff',str(list(shuntOff))]],',')
+            #
+            rB = [[],['BUS/Profile']]
+            rB[1].extend([bi for bi in self.lstBusHnd])
+            #
+            rL = [[],['LINE/Profile']]
+            rL[1].extend([bi for bi in self.lstLineHnd])
+            #
+            rG = [[],['GEN/Profile']]
+            for bi in self.busSlack:
+                 rG[1].append(str(bi)+'_P')
+                 rG[1].append(str(bi)+'_Q')
+                 rG[1].append(str(bi)+'_cosPhi')
+        Ym, theta = dict(),dict()
+        for k,v in Ybus.items():
+            Ym[k] = abs(v)
+            theta[k] = np.angle(v,deg=False)
+        #
+        countSlack = 0
+        countPV = 0
+        slackCounted = []
+        PVcounted = []
+        for bi in self.setBusHnd:
+            if self.BUS[bi][3] == 3:
+                countSlack+=1 
+            elif self.BUS[bi][3] == 2:
+                countPV += 1 
+            slackCounted.append(countSlack)
+            PVcounted.append(countPV)
+        no_jacobi_equation = 2 * self.nBus - countPV - 2 * self.nSlack         
+        #
+        DC = np.zeros(no_jacobi_equation) 
+        #
+        va,ra,cosP,cosN = [],[],[1],[-1]
+        for pi in self.profileID:
+
+            # initialize voltage magnitude of all buses
+            # iterate in setBUShnd in case some buses are off 
+            Vm = {bi:float(self.Ubase) for bi in self.setBusHnd}
+            # initialize voltage angle 
+            delta = {bi:0 for bi in self.setBusHnd}
+            P = {bi:(-self.loadProfile[pi][bi]).real for bi in self.setBusHnd}    #+self.Pgen
+            Q = {bi:(-self.loadProfile[pi][bi]).imag for bi in self.setBusHnd}    #+self.Qgen
+            # update Vm of slack buses
+            for bs in self.setSlack:
+                Vm[bs] = self.genProfile[pi][bs]
+            sa1,dia1,va1 = dict(),dict(),dict() # for 1 profile
+            for ii in range(self.iterMax+1):
+                # Initialize Jacobian Matrix
+                A = np.zeros((no_jacobi_equation,no_jacobi_equation))
+                for b1 in self.setBusHnd:
+
+                    J1_row_offdiag_idx = J2_row_offdiag_idx = int((b1 - slackCounted[b1-1])-1)
+                    J1_diag_idx = J2_row_diag_idx = J3_col_diag_idx = J1_row_offdiag_idx 
+
+                    J3_row_offdiag_idx = J4_row_offdiag_idx = int((self.nBus+b1-slackCounted[b1-1]-PVcounted[b1-1]-self.nSlack)-1)
+                    J4_diag_idx = J2_col_diag_idx = J3_row_diag_idx = J3_row_offdiag_idx 
+
+                    J11 = 0
+                    J22 = 0
+                    J33 = 0
+                    J44 = 0
+                    #
+                    for li in self.busC[b1]:
+                        for b2 in self.lineC[li]:
+                            if b1 == b2:
+                                pass
+                            else:
+                                line = frozenset({b1,b2})
+                                # diagonal elements of J1
+                                J11 += Vm[b1] * Vm[b2] * Ym[line] * math.sin((theta[line] - delta[b1] + delta[b2]).real)
+                                # diagonal elements of J3          
+                                J33 += Vm[b1] * Vm[b2] * Ym[line] * math.cos((theta[line] - delta[b1] + delta[b2]).real)
+                                if self.BUS[b1][3] != 3:
+                                    #slackbus doesn't exist in J2 and J4
+                                    #diagonal elements of J2
+                                    J22 += Vm[b2] * Ym[line] * math.cos((theta[line] - delta[b1] + delta[b2]).real)
+                                    # diagonal elements of J4               
+                                    J44 += Vm[b2] * Ym[line] * math.sin((theta[line] - delta[b1] + delta[b2]).real)
+                                if self.BUS[b1][3] != 3 and self.BUS[b2][3] != 3:
+                                    J1_col_offdiag_idx = J3_col_offdiag_idx = int(b2 - slackCounted[b2-1] - 1)
+                                    J2_col_offdiag_idx = J4_col_offdiag_idx = int(self.nBus + b2 - PVcounted[b2-1] - slackCounted[b2-1] - self.nSlack - 1)
+                                    # off diagonal elements of J1
+                                    A[J1_row_offdiag_idx][J1_col_offdiag_idx] = -Vm[b1] * Vm[b2] * Ym[line] * math.sin((theta[line] - delta[b1] + delta[b2]).real)
+                                
+                                    if self.BUS[b2][3] == 1:
+                                        # off diagonal elements of J2
+                                        A[J2_row_offdiag_idx][J2_col_offdiag_idx] = Vm[b1] * Ym[line] * math.cos((theta[line] - delta[b1] + delta[b2]).real)
+                                
+                                    if self.BUS[b1][3] == 1:
+                                        # off diagonal elements of J3
+                                        A[J3_row_offdiag_idx][J3_col_offdiag_idx] = -Vm[b1] * Vm[b2] * Ym[line] * math.cos((theta[line] - delta[b1] + delta[b2]).real)
+                                
+                                    if self.BUS[b1][3] == 1 and self.BUS[b2][3] == 1:
+                                        # off diagonal elements of J4
+                                        A[J4_row_offdiag_idx][J4_col_offdiag_idx] = -Vm[b1] * Ym[line] * math.sin((theta[line] - delta[b1] + delta[b2]).real)
+                    #   
+                    Pk = Vm[b1]**2 * Ym[b1] * math.cos((theta[b1])) + J33
+                    Qk = -Vm[b1]**2 * Ym[b1] * math.sin((theta[b1])) - J11
+                    if self.BUS[b1][3] == 3:
+                        # swing bus
+                        P[b1] = Pk
+                        Q[b1] = Qk
+                    if self.BUS[b1][3] == 2:
+                        Q[b1] = Qk
+                        """
+                        if Qmax[b1-1] != 0:
+                            Qgc = Q[b1-1] + Qd[n-1] - Qsh[n-1]
+                            if ii <= 7:                   #Between the 2th & 6th iterations
+                                if ii > 2:                #the Mvar of generator buses are
+                                    if Qgc < Qmin[n-1]:   #tested. If not within limits Vm(n)
+                                        Vm[n-1] += 0.01   #is changed in steps of 0.01 pu to
+                                    elif Qgc > Qmax[n-1]: #bring the generator Mvar within
+                                        Vm[n-1] -= 0.01   #the specified limits.            
+                        """
+                    if self.BUS[b1][3] != 3:
+                        # diagonal elements of J1
+                        A[J1_diag_idx][J1_diag_idx] = J11        
+                        DC[J1_diag_idx] = P[b1] - Pk
+                    if self.BUS[b1][3] == 1:
+                        # diagonal elements of J2
+                        A[J2_row_diag_idx][J2_col_diag_idx] = 2 * Vm[b1] * Ym[b1] * math.cos(theta[b1]) + J22    
+                        # diagonal elements of J3
+                        A[J3_row_diag_idx][J3_col_diag_idx] = J33
+                        # diagonal elements of J4         
+                        A[J4_diag_idx][J4_diag_idx] = -2 * Vm[b1] * Ym[b1] * math.sin(theta[b1]) - J44   
+                        DC[J4_diag_idx] = Q[b1] - Qk
+                #matrix A left division Matrix DC
+                DX = np.linalg.solve(A, DC.T)
+                for bi in self.setBusHnd:
+                    del_update_DXidx = int(bi - slackCounted[bi-1]-1)
+                    Vm_update_DXidx = int(self.nBus + bi - PVcounted[bi-1] - slackCounted[bi-1] - self.nSlack-1)
+                    if self.BUS[bi][3] != 3:
+                        delta[bi] +=  DX[del_update_DXidx]
+                    if self.BUS[bi][3] == 1:
+                        Vm[bi] += DX[Vm_update_DXidx]
+                maxerror = max(abs(DC))
+                if maxerror < self.epsilon:
+                    break
+                if ii==self.iterMax:
+                    return {'FLAG':'DIVERGENCE'}
+            # finish NR
+            # store all voltage magnitude value in all profile
+            va.extend(Vm.values())
+            vbus = {bi:(Vm[bi]* np.cos(delta[bi])+Vm[bi]*1j*np.sin(delta[bi])) for bi in self.setBusHnd }
+            sbus = {bi:(P[bi] + Q[bi]*1j) for bi in self.setBusHnd}
+            for bi in self.busSlack:
+                sbus[bi] += self.loadProfile[pi][bi]
+            """
+            for bi in self.busPV:
+                # update Q load in PV bus
+                sbus[bi] += self.loadProfile[pi][bi].imag * 1j 
+            """
+            slt = 0
+            Il = dict()
+            for li,bi in self.lineC.items():
+                line = frozenset({bi[0],bi[1]})
+                Ib1 = (vbus[bi[0]]-vbus[bi[1]])*(-Ybus[line])
+                Ib2 = (vbus[bi[1]]-vbus[bi[0]])*(-Ybus[line])
+                #
+                if abs(Ib1) >= abs(Ib2):
+                    Il[li] = abs(Ib1)
+                else: 
+                    Il[li] = abs(Ib2)   
+
+                 
+                rate = ((Il[li])/self.LINE[li][3])*RATEC
+                ra.append(rate)
+                
+                Snk = vbus[bi[0]]*np.conj(Ib1)
+                Skn = vbus[bi[1]]*np.conj(Ib2)
+                slt += Snk +Skn  
+
+            if fo:
+                va1.update(vbus)
+                dia1.update(Il)
+                sa1.update(sbus)
+            for bs in self.busSlack:
+                if sbus[bs].imag:
+                    cosP.append(sbus[bs].real/abs(sbus[bs]))
+                else:
+                    cosN.append(-sbus[bs].real/abs(sbus[bs]))
+            if fo:
+                rb1 = [pi]
+                rl1 = [pi]
+                rg1 = [pi]
+                for bi1 in self.lstBusHnd:
+                    rb1.append(toString(abs(va1[bi1])/self.Ubase))
+                #
+                for bri in self.lstLineHnd:
+                    try:
+                        r1 = abs(Il[bri])/self.LINE[bri][3]*RATEC
+                        rl1.append( toString(r1,2) )
+                    except:
+                        rl1.append('0')
+                #
+                for bs1 in self.busSlack:
+                    rg1.append(toString(sa1[bs1].real))
+                    rg1.append(toString(sa1[bs1].imag))
+                    if sa1[bs1].imag>=0:
+                        rg1.append(toString(sa1[bs1].real/abs(sa1[bs1]),3))
+                    else:
+                        rg1.append(toString(-sa1[bs1].real/abs(sa1[bs1]),3))
+                #
+                rB.append(rb1)
+                rL.append(rl1)
+                rG.append(rg1)
+            res['DeltaA'] += slt.real 
+        #
+        res['Umax[pu]'] = max(va)/self.Ubase
+        res['Umin[pu]'] = min(va)/self.Ubase
+        res['RateMax[%]'] = max(ra)
+        res['cosP'] = min(cosP)
+        res['cosN'] = max(cosN) 
+        #
+        if fo:
+            rB.append(['','Umax[pu]',toString(res['Umax[pu]']),'Umin[pu]',toString(res['Umin[pu]']) ])
+            add2CSV(fo,rB,',')
+            #
+            rL.append(['','RateMax[%]',toString(res['RateMax[%]'],2)])
+            add2CSV(fo,rL,',')
+            #
+            rG.append(['','cosPmin',toString(res['cosP'],3),'cosNMax',toString(res['cosN'],3)])
+            add2CSV(fo,rG,',')
+        #
+        return res     
+
+    def __run1configNR__(self,lineOff,shuntOff,fo=''):
+        t0 = time.time()
+        #
+        c1 = self.__checkLoopIsland__(lineOff)
+        self.tcheck+=time.time()-t0
+        if c1:
+            return {'FLAG':c1}
+        # ready to run Newton raphson
+        Ybus = self.__calculateYbus__(lineOff,shuntOff)
+        #
+        res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
+        #
+        if fo:
+            add2CSV(fo,[[],[time.ctime()],['PF 1Profile','lineOff',str(list(lineOff)),'shuntOff',str(list(shuntOff))]],',')
+            #
+            rB = [[],['BUS/Profile']]
+            rB[1].extend([bi for bi in self.lstBusHnd])
+            #
+            rL = [[],['LINE/Profile']]
+            rL[1].extend([bi for bi in self.lstLineHnd])
+            #
+            rG = [[],['GEN/Profile']]
+            for bi in self.busSlack:
+                 rG[1].append(str(bi)+'_P')
+                 rG[1].append(str(bi)+'_Q')
+                 rG[1].append(str(bi)+'_cosPhi')
+        #
+        # return Y bus magnitude
+        Ym = np.abs(Ybus)
+        # return phase angle of Ybus        
+        theta = np.angle(Ybus,deg=False)
+        countSlack = 0
+        countPV = 0
+        slackCounted = []
+        PVcounted = []
+        for bi in self.BUS.keys():
+            if self.BUS[bi][3] == 3:
+                countSlack+=1 
+            elif self.BUS[bi][3] == 2:
+                countPV += 1 
+            slackCounted.append(countSlack)
+            PVcounted.append(countPV)
+        no_jacobi_equation = 2 * self.nBus - countPV - 2 * self.nSlack
+        #
+        DC = np.zeros(no_jacobi_equation)
+        J = np.zeros((no_jacobi_equation,no_jacobi_equation))
+        #
+        va,ra,cosP,cosN = [],[],[1],[-1]
+        for pi in self.profileID:
+            # initialize voltage magnitude of all buses
+            Vm = [float(self.Ubase) for _ in self.BUS.keys()]
+            P = [(-self.loadProfile[pi][bi]).real for bi in self.BUS.keys()]    #+self.Pgen
+            Q = [(-self.loadProfile[pi][bi]).imag for bi in self.BUS.keys()]    #+self.Qgen
+            # update Vm of slack buses
+            for bs in self.setSlack:
+                Vm[bs-1] = self.genProfile[pi][bs]
+            # initialize voltage angle 
+            delta = [0 for _ in self.BUS.keys()]
+            sa1,dia1,va1 = dict(),dict(),dict()# for 1 profile
+            for ii in range(self.iterMax+1):
+                A = np.zeros((no_jacobi_equation,no_jacobi_equation))
+                for b1 in self.BUS.keys():
+                    J1_row_offdiag_idx = J2_row_offdiag_idx = int((b1 - slackCounted[b1-1])-1)
+                    J1_diag_idx = J2_row_diag_idx = J3_col_diag_idx = J1_row_offdiag_idx 
+
+                    J3_row_offdiag_idx = J4_row_offdiag_idx = int((self.nBus+b1-slackCounted[b1-1]-PVcounted[b1-1]-self.nSlack)-1)
+                    J4_diag_idx = J2_col_diag_idx = J3_row_diag_idx = J3_row_offdiag_idx 
+
+                    J11 = 0
+                    J22 = 0
+                    J33 = 0
+                    J44 = 0
+                    #
+                    for li in self.busC[b1]:
+                        for b2 in self.lineC[li]:
+                            if b1 == b2:
+                                pass
+                            else:
+                                # diagonal elements of J1
+                                J11 += Vm[b1-1] * Vm[b2-1] * Ym[b1-1][b2-1] * math.sin((theta[b1-1][b2-1] - delta[b1-1] + delta[b2-1]).real)
+                                # diagonal elements of J3          
+                                J33 += Vm[b1-1] * Vm[b2-1] * Ym[b1-1][b2-1] * math.cos((theta[b1-1][b2-1] - delta[b1-1] + delta[b2-1]).real)
+                                if self.BUS[b1][3] != 3:
+                                    #slackbus doesn't exist in J2 and J4
+                                    #diagonal elements of J2
+                                    J22 += Vm[b2-1] * Ym[b1-1][b2-1] * math.cos((theta[b1-1][b2-1] - delta[b1-1] + delta[b2-1]).real)
+                                    #diagonal elements of J4               
+                                    J44 += Vm[b2-1] * Ym[b1-1][b2-1] * math.sin((theta[b1-1][b2-1] - delta[b1-1] + delta[b2-1]).real)
+
+                                if self.BUS[b1][3] != 3 and self.BUS[b2][3] != 3:
+                                    J1_col_offdiag_idx = J3_col_offdiag_idx = int(b2 - slackCounted[b2-1] - 1)
+                                    J2_col_offdiag_idx = J4_col_offdiag_idx = int(self.nBus + b2 - PVcounted[b2-1] - slackCounted[b2-1] - self.nSlack - 1)
+                                    # off diagonal elements of J1
+                                    A[J1_row_offdiag_idx][J1_col_offdiag_idx] = -Vm[b1-1] * Vm[b2-1] * Ym[b1-1][b2-1] * math.sin((theta[b1-1][b2-1] - delta[b1-1] + delta[b2-1]).real)
+                                
+                                    if self.BUS[b2][3] == 1:
+                                        # off diagonal elements of J2
+                                        A[J2_row_offdiag_idx][J2_col_offdiag_idx] = Vm[b1-1] * Ym[b1-1][b2-1] * math.cos((theta[b1-1][b2-1] - delta[b1-1] + delta[b2-1]).real)
+                                
+                                    if self.BUS[b1][3] == 1:
+                                        # off diagonal elements of J3
+                                        A[J3_row_offdiag_idx][J3_col_offdiag_idx] = -Vm[b1-1] * Vm[b2-1] * Ym[b1-1][b2-1] * math.cos((theta[b1-1][b2-1] - delta[b1-1] + delta[b2-1]).real)
+                                
+                                    if self.BUS[b1][3] == 1 and self.BUS[b2][3] == 1:
+                                        # off diagonal elements of J4
+                                        A[J4_row_offdiag_idx][J4_col_offdiag_idx] = -Vm[b1-1] * Ym[b1-1][b2-1] * math.sin((theta[b1-1][b2-1] - delta[b1-1] + delta[b2-1]).real)
+                    #   
+                    Pk = Vm[b1-1]**2 * Ym[b1-1][b1-1] * math.cos((theta[b1-1][b1-1])) + J33
+                    Qk = -Vm[b1-1]**2 * Ym[b1-1][b1-1] * math.sin((theta[b1-1][b1-1])) - J11
+                    if self.BUS[b1][3] == 3:
+                        # swing bus
+                        P[b1-1] = Pk
+                        Q[b1-1] = Qk
+                    if self.BUS[b1][3] == 2:
+                        Q[b1-1] = Qk 
+                        """
+                        if Qmax[b1-1] != 0:
+                            Qgc = Q[b1-1] + Qd[n-1] - Qsh[n-1]
+                            if ii <= 7:                   #Between the 2th & 6th iterations
+                                if ii > 2:                #the Mvar of generator buses are
+                                    if Qgc < Qmin[n-1]:   #tested. If not within limits Vm(n)
+                                        Vm[n-1] += 0.01   #is changed in steps of 0.01 pu to
+                                    elif Qgc > Qmax[n-1]: #bring the generator Mvar within
+                                        Vm[n-1] -= 0.01   #the specified limits.            
+                        """
+                    if self.BUS[b1][3] != 3:
+                        #diagonal elements of J1
+                        A[J1_diag_idx][J1_diag_idx] = J11        
+                        DC[J1_diag_idx] = P[b1-1] - Pk
+                    if self.BUS[b1][3] == 1:
+                        #diagonal elements of J2
+                        A[J2_row_diag_idx][J2_col_diag_idx] = 2 * Vm[b1-1] * Ym[b1-1][b1-1] * math.cos(theta[b1-1][b1-1]) + J22    
+                        #diagonal elements of J3
+                        A[J3_row_diag_idx][J3_col_diag_idx] = J33
+                        #diagonal elements of J4         
+                        A[J4_diag_idx][J4_diag_idx] = -2 * Vm[b1-1] * Ym[b1-1][b1-1] * math.sin(theta[b1-1][b1-1]) - J44   
+                        DC[J4_diag_idx] = Q[b1-1] - Qk
+                #matrix A left division Matrix DC
+                DX = np.linalg.solve(A, DC.T)
+                for bi in self.BUS.keys():
+                    del_update_DXidx = int(bi - slackCounted[bi-1]-1)
+                    Vm_update_DXidx = int(self.nBus + bi - PVcounted[bi-1] - slackCounted[bi-1] - self.nSlack-1)
+                    if self.BUS[bi][3] != 3:
+                        delta[bi-1] +=  DX[del_update_DXidx]
+                    if self.BUS[bi][3] == 1:
+                        Vm[bi-1] += DX[Vm_update_DXidx]
+                maxerror = max(abs(DC))
+                if maxerror < self.epsilon:
+                    break
+                if ii==self.iterMax:
+                    return {'FLAG':'DIVERGENCE'}
+            #finish NR
+            # store all voltage magnitude value in all profile
+            va.extend(Vm)
+            V = [Vm[bi-1]* np.cos(delta[bi-1])+Vm[bi-1]*1j*np.sin(delta[bi-1]) for bi in self.busC ]
+            Il = dict()
+            SLT = 0
+            vbus,sbus = dict(),dict()
+            for i in range(len(Vm)):
+                vbus[i+1] = V[i]
+                sbus[i+1] = P[i] + Q[i]*1j
+            for bi in self.busSlack:
+                sbus[bi] += self.loadProfile[pi][bi]
+            for li,bi in self.lineC.items():
+                Ib1 = (vbus[bi[0]]-vbus[bi[1]])*(-Ybus[bi[0]-1][bi[1]-1])
+                Ib2 = (vbus[bi[1]]-vbus[bi[0]])*(-Ybus[bi[0]-1][bi[1]-1])
+                #
+                if abs(Ib1) >= abs(Ib2):
+                    Il[li] = abs(Ib1)
+                else: 
+                    Il[li] = abs(Ib2)   
+
+                 
+                rate = ((Il[li])/self.LINE[li][3])*RATEC
+                ra.append(rate)
+                
+                Snk = V[bi[0]-1]*np.conj(Ib1)
+                Skn = V[bi[1]-1]*np.conj(Ib2)
+                SLT += Snk +Skn  
+                
+            if fo:
+                va1.update(vbus)
+                dia1.update(Il)
+                sa1.update(sbus)
+            for bs in self.busSlack:
+                if sbus[bs].imag:
+                    cosP.append(sbus[bs].real/abs(sbus[bs]))
+                else:
+                    cosN.append(-sbus[bs].real/abs(sbus[bs]))
+            if fo:
+                rb1 = [pi]
+                rl1 = [pi]
+                rg1 = [pi]
+                for bi1 in self.lstBusHnd:
+                    rb1.append(toString(abs(va1[bi1])/self.Ubase))
+                #
+                for bri in self.lstLineHnd:
+                    try:
+                        r1 = abs(Il[bri])/self.LINE[bri][3]*RATEC
+                        rl1.append( toString(r1,2) )
+                    except:
+                        rl1.append('0')
+                #
+                for bs1 in self.busSlack:
+                    rg1.append(toString(sa1[bs1].real))
+                    rg1.append(toString(sa1[bs1].imag))
+                    if sa1[bs1].imag>=0:
+                        rg1.append(toString(sa1[bs1].real/abs(sa1[bs1]),3))
+                    else:
+                        rg1.append(toString(-sa1[bs1].real/abs(sa1[bs1]),3))
+                #
+                rB.append(rb1)
+                rL.append(rl1)
+                rG.append(rg1)
+        res['DeltaA'] += SLT.real
+            
+                    
+
+                
+
+        res['Umax[pu]'] = max(va)/self.Ubase
+        res['Umin[pu]'] = min(va)/self.Ubase
+        res['RateMax[%]'] = max(ra)
+        res['cosP'] = min(cosP)
+        res['cosN'] = max(cosN)
+        
+        #
+        if fo:
+            rB.append(['','Umax[pu]',toString(res['Umax[pu]']),'Umin[pu]',toString(res['Umin[pu]']) ])
+            add2CSV(fo,rB,',')
+            #
+            rL.append(['','RateMax[%]',toString(res['RateMax[%]'],2)])
+            add2CSV(fo,rL,',')
+            #
+            rG.append(['','cosPmin',toString(res['cosP'],3),'cosNMax',toString(res['cosN'],3)])
+            add2CSV(fo,rG,',')
+        #
+        return res        
 #
 def test_psm():
     # 1 source
-    ARGVS.fi = 'Inputs12.xlsx'
+
+    #ARGVS.fi = 'Inputs12.xlsx'
 ##    varFlag = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, 13, 14, 15, 16,0,1]
-    lineOff = [12,13,14,15,16]
-    shuntOff = []
+    #lineOff = [12,13,14,15,16]
+    #shuntOff = []
 
 ##    # 2 source
     ARGVS.fi = 'Inputs12_2.xlsx'
-##    varFlag = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, 13, 14, 15, 16,0,1]
-    lineOff = [3,12,13,14,15,16]
-##    lineOff = [3,12,13,14,16]
-##    lineOff = [6,12,14]
-    shuntOff = [0]
+    varFlag = [0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1]
+    #lineOff = [6,7,10,11,13,16]
+    #lineOff = [3,12,13,14,16]
+    #lineOff = [3,12,13,14,15,16]
+#    lineOff = [6,12,14]
+    #shuntOff = [0]
+    lineOff = []
+    shuntOff = []
     # 190 bus
 ##    ARGVS.fi = 'Inputs190shunt.xlsx'
 ##    lineOff = [66, 103, 110, 169, 191]
 ##    shuntOff = [47, 66, 80, 130]
-
+    #ARGVS.fi = 'Inputs33bus.xlsx'
     #
     p1 = POWERFLOW(ARGVS.fi)
     t01 = time.time()
-##    v1 = p1.run1Config_WithObjective(varFlag=varFlag,fo=ARGVS.fo)
+    v1 = p1.run1Config_WithObjective(varFlag=varFlag,fo=ARGVS.fo)
 ##    print(v1)
-    v1 = p1.run1Config_WithObjective(lineOff=lineOff,shuntOff=shuntOff,fo=ARGVS.fo)
+    #v1 = p1.run1Config_WithObjective(lineOff=lineOff,shuntOff=shuntOff,fo=ARGVS.fo)
     print('time %.5f'%(time.time()-t01))
     print(v1)
 #
+
+def test_newton_raphson():
+    ##    # 2 source
+    #ARGVS.fi = 'Inputs12_2.xlsx'
+    ARGVS.fi = 'Inputs33bus.xlsx'
+    #varFlag = [0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1]
+    lineOff = []
+##    lineOff = [3,12,13,14,16]
+#    lineOff = [6,12,14]
+    shuntOff = []
+    p1 = POWERFLOW(ARGVS.fi)
+    t01 = time.time()
+    v1 = p1.run1Config_WithObjective(lineOff=lineOff,shuntOff=shuntOff,fo=ARGVS.fo,varFlag=varFlag)
+    print('time %.5f'%(time.time()-t01))
+    print(v1)
+
 if __name__ == '__main__':
+    
     ARGVS.fo = 'res\\res1Config.csv'
-    #test_psm()
+    test_psm()
+    """
+    ARGVS.fi = 'Inputs12_2.xlsx'
+    p1 = POWERFLOW(ARGVS.fi)
+    lineOff = [6,7,10,11,13,16]
+    fl1 = p1.__checkLoopIsland__(lineOff=set(lineOff))
+    print(fl1)
+    """
