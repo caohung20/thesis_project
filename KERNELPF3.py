@@ -1394,7 +1394,7 @@ def test_psm():
     #shuntOff = []
 
 ##    # 2 source
-    ARGVS.fi = 'Inputs12_2.xlsx'
+    ARGVS.fi = 'Inputs12_2-test3.xlsx'
     varFlag = [0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1]
     #lineOff = [6,7,10,11,13,16]
     #lineOff = [3,12,13,14,16]
