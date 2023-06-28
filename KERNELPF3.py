@@ -182,7 +182,6 @@ class POWERFLOW:
                 qsh = busa['Qshunt[kvar]'][i]/1000
                 if abs(qsh)>1e-6:
                     self.BUSbs[n1] = qsh
-                    self.Qsh[n1] = qsh
                 #
                 c1 = busa['CODE'][i]
                 if c1==None:
@@ -686,7 +685,7 @@ class POWERFLOW:
         # Shunt 
         for k1,v1 in self.BUSbs.items():
             if k1 not in shuntOff:
-                Ybus[k1,k1] += v1*1j
+                Ybus[k1-1][k1-1] += v1*1j
         return Ybus
 
     def __calculate_sparse_Ybus__(self,lineOff,shuntOff):    
@@ -850,41 +849,8 @@ class POWERFLOW:
                 Skn = vbus[bi[1]]*np.conj(Ib2)
                 slt += Snk +Skn
             
-            if fo:
-                va1.update(vbus)
-                dia1.update(Il)
-                sa1.update(sbus)
-            for bs in self.busSlack:
-                if sbus[bs].imag:
-                    cosP.append(sbus[bs].real/abs(sbus[bs]))
-                else:
-                    cosN.append(-sbus[bs].real/abs(sbus[bs]))
-            if fo:
-                rb1 = [pi]
-                rl1 = [pi]
-                rg1 = [pi]
-                for bi1 in self.lstBusHnd:
-                    rb1.append(toString(abs(va1[bi1])/self.Ubase))
-                #
-                for bri in self.lstLineHnd:
-                    try:
-                        r1 = abs(Il[bri])/self.LINE[bri][3]*RATEC
-                        rl1.append( toString(r1,2) )
-                    except:
-                        rl1.append('0')
-                #
-                for bs1 in self.busSlack:
-                    rg1.append(toString(sa1[bs1].real))
-                    rg1.append(toString(sa1[bs1].imag))
-                    if sa1[bs1].imag>=0:
-                        rg1.append(toString(sa1[bs1].real/abs(sa1[bs1]),3))
-                    else:
-                        rg1.append(toString(-sa1[bs1].real/abs(sa1[bs1]),3))
-                #
-                rB.append(rb1)
-                rL.append(rl1)
-                rG.append(rg1)
-            res['DeltaA'] += slt.real 
+            res,cosP,cosN,rB,rL,rG =  self.__update1profilevalue__(pi,fo,res,va1,dia1,sa1,vbus,Il
+                                                                    ,sbus,cosP,cosN,rB,rL,rG,slt)
         #
         res['Umax[pu]'] = max(va)/self.Ubase
         res['Umin[pu]'] = min(va)/self.Ubase
@@ -904,7 +870,43 @@ class POWERFLOW:
             add2CSV(fo,rG,',')
         #
         return res         
-
+    def __update1profilevalue__(self,pi,fo,res,va1,dia1,sa1,vbus,Il,sbus,cosP,cosN,rB,rL,rG,slt):
+        if fo:
+            va1.update(vbus)
+            dia1.update(Il)
+            sa1.update(sbus)
+        for bs in self.busSlack:
+            if sbus[bs].imag:
+                cosP.append(sbus[bs].real/abs(sbus[bs]))
+            else:
+                cosN.append(-sbus[bs].real/abs(sbus[bs]))
+        if fo:
+            rb1 = [pi]
+            rl1 = [pi]
+            rg1 = [pi]
+            for bi1 in self.lstBusHnd:
+                rb1.append(toString(abs(va1[bi1])/self.Ubase))
+            #
+            for bri in self.lstLineHnd:
+                try:
+                    r1 = abs(Il[bri])/self.LINE[bri][3]*RATEC
+                    rl1.append( toString(r1,2) )
+                except:
+                    rl1.append('0')
+            #
+            for bs1 in self.busSlack:
+                rg1.append(toString(sa1[bs1].real))
+                rg1.append(toString(sa1[bs1].imag))
+                if sa1[bs1].imag>=0:
+                    rg1.append(toString(sa1[bs1].real/abs(sa1[bs1]),3))
+                else:
+                    rg1.append(toString(-sa1[bs1].real/abs(sa1[bs1]),3))
+            #
+            rB.append(rb1)
+            rL.append(rl1)
+            rG.append(rg1)
+        res['DeltaA'] += slt.real
+        return res,cosP,cosN,rB,rL,rG 
 
     def __run1configSNR__(self,lineOff,shuntOff,fo=''):
         t0 = time.time()
@@ -1091,42 +1093,9 @@ class POWERFLOW:
                 Snk = vbus[bi[0]]*np.conj(Ib1)
                 Skn = vbus[bi[1]]*np.conj(Ib2)
                 slt += Snk +Skn  
-
-            if fo:
-                va1.update(vbus)
-                dia1.update(Il)
-                sa1.update(sbus)
-            for bs in self.busSlack:
-                if sbus[bs].imag:
-                    cosP.append(sbus[bs].real/abs(sbus[bs]))
-                else:
-                    cosN.append(-sbus[bs].real/abs(sbus[bs]))
-            if fo:
-                rb1 = [pi]
-                rl1 = [pi]
-                rg1 = [pi]
-                for bi1 in self.lstBusHnd:
-                    rb1.append(toString(abs(va1[bi1])/self.Ubase))
-                #
-                for bri in self.lstLineHnd:
-                    try:
-                        r1 = abs(Il[bri])/self.LINE[bri][3]*RATEC
-                        rl1.append( toString(r1,2) )
-                    except:
-                        rl1.append('0')
-                #
-                for bs1 in self.busSlack:
-                    rg1.append(toString(sa1[bs1].real))
-                    rg1.append(toString(sa1[bs1].imag))
-                    if sa1[bs1].imag>=0:
-                        rg1.append(toString(sa1[bs1].real/abs(sa1[bs1]),3))
-                    else:
-                        rg1.append(toString(-sa1[bs1].real/abs(sa1[bs1]),3))
-                #
-                rB.append(rb1)
-                rL.append(rl1)
-                rG.append(rg1)
-            res['DeltaA'] += slt.real 
+            res,cosP,cosN,rB,rL,rG =  self.__update1profilevalue__(pi,fo,res,va1,dia1,sa1,vbus,Il
+                                                                    ,sbus,cosP,cosN,rB,rL,rG,slt)
+            
         #
         res['Umax[pu]'] = max(va)/self.Ubase
         res['Umin[pu]'] = min(va)/self.Ubase
@@ -1169,9 +1138,9 @@ class POWERFLOW:
             #
             rG = [[],['GEN/Profile']]
             for bi in self.busSlack:
-                 rG[1].append(str(bi)+'_P')
-                 rG[1].append(str(bi)+'_Q')
-                 rG[1].append(str(bi)+'_cosPhi')
+                rG[1].append(str(bi)+'_P')
+                rG[1].append(str(bi)+'_Q')
+                rG[1].append(str(bi)+'_cosPhi')
         #
         # return Y bus magnitude
         Ym = np.abs(Ybus)
@@ -1191,7 +1160,6 @@ class POWERFLOW:
         no_jacobi_equation = 2 * self.nBus - countPV - 2 * self.nSlack
         #
         DC = np.zeros(no_jacobi_equation)
-        J = np.zeros((no_jacobi_equation,no_jacobi_equation))
         #
         va,ra,cosP,cosN = [],[],[1],[-1]
         for pi in self.profileID:
@@ -1360,11 +1328,7 @@ class POWERFLOW:
                 rB.append(rb1)
                 rL.append(rl1)
                 rG.append(rg1)
-        res['DeltaA'] += SLT.real
-            
-                    
-
-                
+            res['DeltaA'] += SLT.real
 
         res['Umax[pu]'] = max(va)/self.Ubase
         res['Umin[pu]'] = min(va)/self.Ubase
@@ -1394,44 +1358,31 @@ def test_psm():
     #shuntOff = []
 
 ##    # 2 source
-    ARGVS.fi = 'Inputs12_2-test3.xlsx'
-    varFlag = [0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1]
+    ARGVS.fi = 'Inputs12_2.xlsx'
+    #varFlag = [0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1]
     #lineOff = [6,7,10,11,13,16]
     #lineOff = [3,12,13,14,16]
-    #lineOff = [3,12,13,14,15,16]
+    lineOff = [3,12,13,14,15,16]
 #    lineOff = [6,12,14]
-    #shuntOff = [0]
-    lineOff = []
-    shuntOff = []
+    shuntOff = [0]
+    #lineOff = []
+    #shuntOff = []
     # 190 bus
-##    ARGVS.fi = 'Inputs190shunt.xlsx'
-##    lineOff = [66, 103, 110, 169, 191]
-##    shuntOff = [47, 66, 80, 130]
+    #ARGVS.fi = 'Inputs190.xlsx'
+    #lineOff = [66, 103, 110, 169, 191]
+    #shuntOff = [47, 66, 80, 130]
     #ARGVS.fi = 'Inputs33bus.xlsx'
     #
     p1 = POWERFLOW(ARGVS.fi)
     t01 = time.time()
-    v1 = p1.run1Config_WithObjective(varFlag=varFlag,fo=ARGVS.fo)
+    v1 = p1.run1Config_WithObjective(lineOff=lineOff,shuntOff=shuntOff,fo=ARGVS.fo)
 ##    print(v1)
     #v1 = p1.run1Config_WithObjective(lineOff=lineOff,shuntOff=shuntOff,fo=ARGVS.fo)
     print('time %.5f'%(time.time()-t01))
     print(v1)
 #
 
-def test_newton_raphson():
-    ##    # 2 source
-    #ARGVS.fi = 'Inputs12_2.xlsx'
-    ARGVS.fi = 'Inputs33bus.xlsx'
-    #varFlag = [0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1]
-    lineOff = []
-##    lineOff = [3,12,13,14,16]
-#    lineOff = [6,12,14]
-    shuntOff = []
-    p1 = POWERFLOW(ARGVS.fi)
-    t01 = time.time()
-    v1 = p1.run1Config_WithObjective(lineOff=lineOff,shuntOff=shuntOff,fo=ARGVS.fo,varFlag=varFlag)
-    print('time %.5f'%(time.time()-t01))
-    print(v1)
+
 
 if __name__ == '__main__':
     
