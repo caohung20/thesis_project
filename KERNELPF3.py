@@ -337,16 +337,25 @@ class POWERFLOW:
         return v1
     #
     def run1Config(self,lineOff=set(),shuntOff=set(),fo=''):
+        #check loop island and return if loop or island appears 
+        t0 = time.time()
+        #
+        c1 = self.__checkLoopIsland__(lineOff)
+        self.tcheck+=time.time()-t0
+        if c1:
+            return {'FLAG':c1}
         """ run PF 1 config """
         if self.setting['Algo_PF']=='PSM':
-            return self.__run1ConfigPSM__(lineOff,shuntOff,fo)
+            return self.__run1ConfigPSM__(lineOff,shuntOff,fo)  
         elif self.setting['Algo_PF']=='N-R':
             return self.__run1configNR__(lineOff,shuntOff,fo)
+            
         elif self.setting['Algo_PF'] == 'GS':
             return self.__run1configGS__(lineOff,shuntOff,fo)
         elif self.setting['Algo_PF'] == 'SNR':
             return self.__run1configSNR__(lineOff,shuntOff,fo)
         return None
+        
     #
     def __run1ConfigPSM__(self,lineOff,shuntOff,fo=''):
         """
@@ -354,13 +363,6 @@ class POWERFLOW:
         - FLAG (str): 'CONVERGENCE' or 'DIVERGENCE' or 'LOOP' or 'ISLAND'
         - DeltaA: MWH
         """
-        #
-        t0 = time.time()
-        #
-        c1 = self.__checkLoopIsland__(lineOff)
-        self.tcheck+=time.time()-t0
-        if c1:
-            return {'FLAG':c1}
         # ok run PSM
         self.__lineDirection__()
         #print(self.lineC)
@@ -712,15 +714,13 @@ class POWERFLOW:
                     sparse_ybus[bi] =  y[li]
                 else:
                     sparse_ybus[bi] +=  y[li]
+        # case if bus slack does not connect to any bus
+        for bsi in self.busSlack:
+            if not self.busC[bsi]:
+                sparse_ybus[bsi] = 0
         return sparse_ybus
 
     def __run1configGS__(self,lineOff,shuntOff,fo=''):
-        t0 = time.time()
-        #
-        c1 = self.__checkLoopIsland__(lineOff)
-        self.tcheck+=time.time()-t0
-        if c1:
-            return {'FLAG':c1}
         # ready to run Gauss Seidel
         Ybus = self.__calculate_sparse_Ybus__(lineOff,shuntOff)
         #
@@ -742,6 +742,7 @@ class POWERFLOW:
                  rG[1].append(str(bi)+'_cosPhi')
         va,ra,cosP,cosN = [],[],[1],[-1]
         accel = self.setting['accel']
+
         for pi in self.profileID:
             P = {bi:(-self.loadProfile[pi][bi]).real for bi in self.setBusHnd}    #+self.Pgen
             Q = {bi:(-self.loadProfile[pi][bi]).imag for bi in self.setBusHnd}    #+self.Qgen
@@ -848,10 +849,41 @@ class POWERFLOW:
                 Snk = vbus[bi[0]]*np.conj(Ib1)
                 Skn = vbus[bi[1]]*np.conj(Ib2)
                 slt += Snk +Skn
-            
-            res,cosP,cosN,rB,rL,rG =  self.__update1profilevalue__(pi,fo,res,va1,dia1,sa1,vbus,Il
-                                                                    ,sbus,cosP,cosN,rB,rL,rG,slt)
-        #
+            if fo:
+                va1.update(vbus)
+                dia1.update(Il)
+                sa1.update(sbus)
+            for bs in self.busSlack:
+                if sbus[bs].imag:
+                    cosP.append(sbus[bs].real/abs(sbus[bs]))
+                else:
+                    cosN.append(-sbus[bs].real/abs(sbus[bs]))
+            if fo:
+                rb1 = [pi]
+                rl1 = [pi]
+                rg1 = [pi]
+                for bi1 in self.lstBusHnd:
+                    rb1.append(toString(abs(va1[bi1])/self.Ubase))
+                #
+                for bri in self.lstLineHnd:
+                    try:
+                        r1 = abs(Il[bri])/self.LINE[bri][3]*RATEC
+                        rl1.append( toString(r1,2) )
+                    except:
+                        rl1.append('0')
+                #
+                for bs1 in self.busSlack:
+                    rg1.append(toString(sa1[bs1].real))
+                    rg1.append(toString(sa1[bs1].imag))
+                    if sa1[bs1].imag>=0:
+                        rg1.append(toString(sa1[bs1].real/abs(sa1[bs1]),3))
+                    else:
+                        rg1.append(toString(-sa1[bs1].real/abs(sa1[bs1]),3))
+                #
+                rB.append(rb1)
+                rL.append(rl1)
+                rG.append(rg1)
+            res['DeltaA'] += slt.real
         res['Umax[pu]'] = max(va)/self.Ubase
         res['Umin[pu]'] = min(va)/self.Ubase
         res['RateMax[%]'] = max(ra)
@@ -869,8 +901,10 @@ class POWERFLOW:
             rG.append(['','cosPmin',toString(res['cosP'],3),'cosNMax',toString(res['cosN'],3)])
             add2CSV(fo,rG,',')
         #
-        return res         
-    def __update1profilevalue__(self,pi,fo,res,va1,dia1,sa1,vbus,Il,sbus,cosP,cosN,rB,rL,rG,slt):
+        return res
+             
+    def __update1profilevalue__(self,pi=None,fo='',res=[],va1=None,dia1=None,sa1=None,vbus=None,
+                                Il=None,sbus=dict(),cosP=None,cosN=None,rB=None,rL=None,rG=None,slt=complex(0,0)):
         if fo:
             va1.update(vbus)
             dia1.update(Il)
@@ -906,17 +940,17 @@ class POWERFLOW:
             rL.append(rl1)
             rG.append(rg1)
         res['DeltaA'] += slt.real
-        return res,cosP,cosN,rB,rL,rG 
+        if fo:
+            return res,cosP,cosN,rB,rL,rG
+        else:
+            return res,cosP,cosN     
 
     def __run1configSNR__(self,lineOff,shuntOff,fo=''):
-        t0 = time.time()
-        #
-        c1 = self.__checkLoopIsland__(lineOff)
-        self.tcheck+=time.time()-t0
-        if c1:
-            return {'FLAG':c1}
         # ready to run Newton raphson
+        start = time.time()
         Ybus = self.__calculate_sparse_Ybus__(lineOff,shuntOff)
+        end = time.time()
+        print(end - start)
         #
         res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
         #
@@ -1085,17 +1119,18 @@ class POWERFLOW:
                     Il[li] = abs(Ib1)
                 else: 
                     Il[li] = abs(Ib2)   
-
-                 
                 rate = ((Il[li])/self.LINE[li][3])*RATEC
                 ra.append(rate)
                 
                 Snk = vbus[bi[0]]*np.conj(Ib1)
                 Skn = vbus[bi[1]]*np.conj(Ib2)
-                slt += Snk +Skn  
-            res,cosP,cosN,rB,rL,rG =  self.__update1profilevalue__(pi,fo,res,va1,dia1,sa1,vbus,Il
+                slt += Snk +Skn 
+            if fo:     
+                res,cosP,cosN,rB,rL,rG =  self.__update1profilevalue__(pi,fo,res,va1,dia1,sa1,vbus,Il
                                                                     ,sbus,cosP,cosN,rB,rL,rG,slt)
-            
+            else:
+                res,cosP,cosN = self.__update1profilevalue__(pi,fo,res,va1,dia1,sa1,vbus,Il
+                                                                    ,sbus,cosP,cosN,slt)        
         #
         res['Umax[pu]'] = max(va)/self.Ubase
         res['Umin[pu]'] = min(va)/self.Ubase
@@ -1116,14 +1151,9 @@ class POWERFLOW:
         return res     
 
     def __run1configNR__(self,lineOff,shuntOff,fo=''):
-        t0 = time.time()
-        #
-        c1 = self.__checkLoopIsland__(lineOff)
-        self.tcheck+=time.time()-t0
-        if c1:
-            return {'FLAG':c1}
         # ready to run Newton raphson
         Ybus = self.__calculateYbus__(lineOff,shuntOff)
+        
         #
         res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
         #
@@ -1349,6 +1379,161 @@ class POWERFLOW:
         #
         return res        
 #
+class GaussSeidel(POWERFLOW):
+    def __init__(self, fi):
+        super().__init__(fi)
+    def __run1configGS__(self,lineOff,shuntOff,fo=''):
+        # ready to run Gauss Seidel
+        Ybus = self.__calculate_sparse_Ybus__(lineOff,shuntOff)
+        #
+        res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
+         #
+        if fo:
+            add2CSV(fo,[[],[time.ctime()],['PF 1Profile','lineOff',str(list(lineOff)),'shuntOff',str(list(shuntOff))]],',')
+            #
+            rB = [[],['BUS/Profile']]
+            rB[1].extend([bi for bi in self.lstBusHnd])
+            #
+            rL = [[],['LINE/Profile']]
+            rL[1].extend([bi for bi in self.lstLineHnd])
+            #
+            rG = [[],['GEN/Profile']]
+            for bi in self.busSlack:
+                 rG[1].append(str(bi)+'_P')
+                 rG[1].append(str(bi)+'_Q')
+                 rG[1].append(str(bi)+'_cosPhi')
+        va,ra,cosP,cosN = [],[],[1],[-1]
+        accel = self.setting['accel']
+        for pi in self.profileID:
+            P = {bi:(-self.loadProfile[pi][bi]).real for bi in self.setBusHnd}    #+self.Pgen
+            Q = {bi:(-self.loadProfile[pi][bi]).imag for bi in self.setBusHnd}    #+self.Qgen
+            DP = {bi:0 for bi in self.setBusHnd}
+            DQ = {bi:0 for bi in self.setBusHnd}
+            sbus = {bi:(P[bi] + Q[bi]*1j) for bi in self.setBusHnd}
+            vbus = {bi:complex(self.Ubase,0) for bi in self.setBusHnd}
+            # initialize voltage correction
+            Vc = {bi:complex(0,0) for bi in self.setBusHnd}
+            # update Vm of slack buses
+            for bs in self.setSlack:
+                vbus[bs] = complex(self.genProfile[pi][bs],0) 
+            Vm = {bi:abs(vbus[bi])for bi in self.setBusHnd}
+            sa1,dia1,va1 = dict(),dict(),dict() # for 1 profile
+            for ii in range(self.iterMax+1):
+                for b1 in self.setBusHnd:
+                    YV = 0 + 1j * 0
+                    for li in self.busC[b1]:
+                        for b2 in self.lineC[li]:
+                            if b1 == b2:
+                                pass
+                            else:
+                                line = frozenset({b1,b2})
+                                YV += Ybus[line] * vbus[b2]
+                    Sc = np.conj(vbus[b1]) * (Ybus[b1] * vbus[b1] + YV)
+                    Sc = np.conj(Sc)
+                    DP[b1] = P[b1] - np.real(Sc)
+                    DQ[b1] = Q[b1] - np.imag(Sc)
+                    if self.BUS[b1][3] == 3:
+                        sbus[b1] = Sc
+                        P[b1] = np.real(Sc)
+                        Q[b1] = np.imag(Sc)
+                        DP[b1] = 0
+                        DQ[b1] = 0
+                        Vc[b1] = vbus[b1]
+                    elif self.BUS[b1][3] == 2:
+                        Q[b1] = np.imag(Sc)
+                        sbus[b1] = P[b1] + 1j * Q[b1]
+                        """
+                        if Qmax[n] != 0:
+                            Qgc = Q[n] * basemva + Qd[n] - Qsh[n]
+                            if abs(DQ[n]) <= 0.005 and iter >= 10:
+                                if DV[n] <= 0.045:
+                                    if Qgc < Qmin[n]:
+                                        Vm[n] += 0.005
+                                        DV[n] += 0.005
+                                    elif Qgc > Qmax[n]:
+                                        Vm[n] -= 0.005
+                                        DV[n] += 0.005
+                                else:
+                                    pass
+                            else:
+                                pass
+                        else:
+                            pass
+                        """
+                    if self.BUS[b1][3] != 3:
+                        Vc[b1] = (np.conj(sbus[b1]) / np.conj(vbus[b1]) - YV) / Ybus[b1]
+                    else:
+                        pass
+                    if self.BUS[b1][3] == 1:
+                        vbus[b1] = vbus[b1] + accel * (Vc[b1] - vbus[b1])
+                    elif self.BUS[b1][3] == 2:
+                        VcI = np.imag(Vc[b1])
+                        VcR = np.sqrt(Vm[b1] ** 2 - VcI ** 2)
+                        Vc[b1] = VcR + 1j * VcI
+                        vbus[b1] = vbus[b1] + accel * (Vc[b1] - vbus[b1])
+                maxerror = abs(DP[b1])
+                for bi in self.setBusHnd:
+                    if abs(DP[bi]) > maxerror:
+                        maxerror = abs(DP[bi])
+                    if abs(DQ[bi]) > maxerror:
+                        maxerror = abs(DQ[bi])
+                if maxerror < self.epsilon:
+                    break
+                if ii==self.iterMax:
+                    return {'FLAG':'DIVERGENCE'}
+            # finish GS
+            # store all voltage magnitude value in all profile
+            Vm = {bi:abs(vbus[bi]) for bi in self.setBusHnd}
+            va.extend(Vm.values())
+            for bi in self.busSlack:
+                sbus[bi] += self.loadProfile[pi][bi]
+            """
+            for bi in self.busPV:
+                # update Q load in PV bus
+                sbus[bi] += self.loadProfile[pi][bi].imag * 1j 
+            """
+            slt = 0
+            Il = dict()
+            for li,bi in self.lineC.items():
+                line = frozenset({bi[0],bi[1]})
+                Ib1 = (vbus[bi[0]]-vbus[bi[1]])*(-Ybus[line])
+                Ib2 = (vbus[bi[1]]-vbus[bi[0]])*(-Ybus[line])
+                #
+                if abs(Ib1) >= abs(Ib2):
+                    Il[li] = abs(Ib1)
+                else: 
+                    Il[li] = abs(Ib2)   
+
+                rate = ((Il[li])/self.LINE[li][3])*RATEC
+                ra.append(rate)
+                
+                Snk = vbus[bi[0]]*np.conj(Ib1)
+                Skn = vbus[bi[1]]*np.conj(Ib2)
+                slt += Snk +Skn
+            
+            res,cosP,cosN,rB,rL,rG =  self.__update1profilevalue__(pi,fo,res,va1,dia1,sa1,vbus,Il
+                                                                    ,sbus,cosP,cosN,rB,rL,rG,slt)
+        #
+        res['Umax[pu]'] = max(va)/self.Ubase
+        res['Umin[pu]'] = min(va)/self.Ubase
+        res['RateMax[%]'] = max(ra)
+        res['cosP'] = min(cosP)
+        res['cosN'] = max(cosN)
+        
+        #
+        if fo:
+            rB.append(['','Umax[pu]',toString(res['Umax[pu]']),'Umin[pu]',toString(res['Umin[pu]']) ])
+            add2CSV(fo,rB,',')
+            #
+            rL.append(['','RateMax[%]',toString(res['RateMax[%]'],2)])
+            add2CSV(fo,rL,',')
+            #
+            rG.append(['','cosPmin',toString(res['cosP'],3),'cosNMax',toString(res['cosN'],3)])
+            add2CSV(fo,rG,',')
+        #
+        return res      
+    
+# #
 def test_psm():
     # 1 source
 
