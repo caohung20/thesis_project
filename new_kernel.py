@@ -1,9 +1,9 @@
-_author__    = "Cao Anh Quoc Hung ft Dr. Pham Quang Phuong"
+_author__    = "Dr. Pham Quang Phuong","Cao Anh Quoc Hung"
 __copyright__ = "Copyright 2023"
 __license__   = "All rights reserved"
-__email__     = "phuong.phamquang@hust.edu.vn"
+__email__     = "phuong.phamquang@hust.edu.vn","caoanhquochung@gmail.com"
 __status__    = "Released"
-__version__   = "1.1.5"
+__version__   = "1.2"
 """
 about: ....
 """
@@ -11,6 +11,11 @@ import os,time,math
 import openpyxl,csv
 import argparse
 import numpy as np
+"""
+import psutil
+process = psutil.Process()
+print("Memory usage:", process.memory_info().rss)
+"""
 
 
 PARSER_INPUTS = argparse.ArgumentParser(epilog= "")
@@ -71,68 +76,6 @@ def toString(v,nRound=5):
         return '{'+s1+'}'
     return str(v)
 #
-def __checkLoop__(busHnd,bus,br):
-    setBusChecked = set()
-    setBrChecked = set()
-    for o1 in busHnd:
-        if o1 not in setBusChecked:
-            setBusChecked.add(o1)
-            tb1 = {o1}
-            #
-            for i in range(20000):
-                if i==19999:
-                    raise Exception('Error in checkLoop()')
-                tb2 = set()
-                for b1 in tb1:
-                    for l1 in bus[b1]:
-                        if l1 not in setBrChecked:
-                            setBrChecked.add(l1)
-                            for bi in br[l1]:
-                                if bi!=b1:
-                                    if bi in setBusChecked or bi in tb2:
-                                        return bi
-                                    tb2.add(bi)
-                if len(tb2)==0:
-                    break #ok finish no loop for this group
-                setBusChecked.update(tb2)
-                tb1=tb2.copy()
-    return None
-#
-def __findBusConnected__(bi1,bset,lset):
-    ## find all bus connected to Bus b1
-    res = {bi1}
-    ba = {bi1}
-    while True:
-        ba2 = set()
-        for b1 in ba:
-            for li in bset[b1]:
-                for bi in lset[li]:
-                    if bi not in res:
-                        ba2.add(bi)
-        if ba2:
-            res.update(ba2)
-            ba=ba2
-        else:
-            break
-    return res
-#
-def __getLineISL__(busC0):
-    lineISL = set() # line can not be off => ISLAND
-    busC = busC0.copy()
-    while True:
-        n1 = len(lineISL)
-        for k,v in busC.items():
-            if len(v)==1:
-                lineISL.update(v)
-        if n1==len(lineISL):
-            break
-        busc1 = dict()
-        for k,v in busC.items():
-            if len(v)!=1:
-                busc1[k]=v-lineISL
-        busC = busc1.copy()
-    return lineISL,busC
-#
 def add2CSV(nameFile,ares,delim):
     """
     append array String to a file CSV
@@ -163,6 +106,7 @@ class Parameter:
         genProfile = self.__readInput1Sheet__(wbInput,'GENPROFILE')
         busa = self.__readInput1Sheet__(wbInput,'BUS')
         linea = self.__readInput1Sheet__(wbInput,'LINE')
+        dgProfile = self.__readInput1Sheet__(wbInput,'DGPROFILE')
         self.setting = self.__readSetting__(wbInput)
         #
         self.iterMax = int(self.setting['option_PF'][0])
@@ -174,6 +118,7 @@ class Parameter:
         self.busSlack = []
         self.BUSbs = {} #shunt
         self.Qsh = {}
+        self.dg = {}
         for i in range(len(busa['NO'])):
             if busa['FLAG'][i]:
                 n1 = busa['NO'][i]
@@ -181,6 +126,8 @@ class Parameter:
                 p1 = busa['PLOAD[kw]'][i]/1000
                 q1 = busa['QLOAD[kvar]'][i]/1000
                 qsh = busa['Qshunt[kvar]'][i]/1000
+                pdg = busa['Pdgen[kw]'][i]/1000
+                qdg = busa['Qdgen[kvar]'][i]/1000
                 if abs(qsh)>1e-6:
                     self.BUSbs[n1] = qsh
                 #
@@ -191,6 +138,8 @@ class Parameter:
                     self.busSlack.append(n1)
                 #
                 self.BUS[n1] = [kv,p1,q1,c1]
+                if abs(pdg) > 0 and abs(qdg) > 0: 
+                    self.dg[n1] = [pdg,qdg]
         self.nSlack = len(self.busSlack)
         self.setSlack = set(self.busSlack)
         #
@@ -201,6 +150,10 @@ class Parameter:
             self.BUSbs[k1] = v1/self.Ubase2# q =u*u*b
         #
         self.profileID = [int(i) for i in loadProfile['time\\NOBUS']]
+        self.profiledgID = [int(i) for i in dgProfile['time\\NOBUS']]
+        if len(self.profiledgID) != len(self.profiledgID):
+            raise Exception('Error size of profile')
+        #
         # LOAD PROFILE convert to MVA
         self.loadProfile = dict()
         self.loadAll = dict()
@@ -224,6 +177,20 @@ class Parameter:
                     n1 = int(k1)
                     v1[n1] = genProfile[k1][ii] * self.Ubase
             self.genProfile[k]=v1
+        # DG PROFILE convert to MVA
+        self.dgProfile = dict()
+        self.dgAll = dict()
+        if self.dg:
+            for ii in range(len(self.profiledgID)):
+                k = dgProfile['time\\NOBUS'][ii]
+                v1 = dict()
+                self.dgAll[k] = 0
+                for k1 in dgProfile.keys():
+                    if k1!='time\\NOBUS':
+                        n1 = int(k1)
+                        v1[n1] = complex(dgProfile[k1][ii] * self.dg[n1][0],dgProfile[k1][ii] *self.dg[n1][1])
+                        self.dgAll[k] += v1[n1]
+                self.dgProfile[k] = v1
         # LINE[NO] = [FROMBUS,TOBUS,RX(Ohm),B/2(Siemens),RATE ]
         self.LINE = {}
         self.LINEb = {} # b of Line
@@ -256,9 +223,19 @@ class Parameter:
                 if busa['FLAG3'][i]:
                     self.shuntFLAG3.append(busa['NO'][i])
         #
-        self.nVar = len(self.lineFLAG3) + len(self.shuntFLAG3)
-        self.nL = len(self.lineFLAG3)
+        self.dgFLAG3 = []
+        if 'FLAG4' in busa.keys():
+            for i in range(len(busa['NO'])):
+                if busa['FLAG4'][i]:
+                    self.dgFLAG3.append(busa['NO'][i])
+
         #
+        self.nL = len(self.lineFLAG3)
+        self.nSht = len(self.shuntFLAG3)
+        self.nDg = len(self.dgFLAG3)
+        self.nVar = self.nL + self.nSht + self.nDg
+        #
+         #
         self.BUSC = dict() #connect of BUS
         for b1 in self.setBusHnd:
             self.BUSC[b1] = set()
@@ -318,22 +295,27 @@ class Parameter:
     #
 
 class Configuration:
-    def __init__(self,param: Parameter,lineOff=[],shuntOff=[],varFlag=None):
+    def __init__(self,param: Parameter,lineOff=[],shuntOff=[],dgOff=[],varFlag=None):
         self.param = param
         if varFlag is not None:
             if len(varFlag)!=self.param.nVar:
                 raise Exception('Error size of varFlag')
             lineOff = self.getLineOff(varFlag[:self.param.nL])
-            shuntOff = self.getShuntOff(varFlag[self.param.nL:])
+            shuntOff = self.getShuntOff(varFlag[self.param.nL:(self.param.nVar-self.param.nDg)])
+            dgOff = self.getDgOff(varFlag[self.param.nSht:])
+        #
+        #
         self.setBusHnd =self.param.setBusHnd
         self.setLineHnd = self.param.setLineHndAll - set(lineOff)
         self.setLinebHnd = self.param.LINEb.keys() - set(lineOff)
+        #
         self.shuntOff = set(shuntOff)
         self.lineOff = set(lineOff)
+        self.dgOff = set(dgOff)
+        #
         self.lineSureISL,busc1 = self.__getLineISL__(self.param.BUSC)
         self.bus0ISL = set(busc1.keys())
         self.busISL = self.setBusHnd - self.bus0ISL
-        #
         #
         self.lineC = {k:self.param.LINE[k][:2] for k in self.setLineHnd}
         self.busC = {b1:set() for b1 in self.setBusHnd}
@@ -341,6 +323,8 @@ class Configuration:
             self.busC[v[0]].add(k)
             self.busC[v[1]].add(k)
         #
+        #Dg On
+        self.dgOn = set(self.param.dg.keys()).difference(self.dgOff)
     #
     def getLineFlag3(self):
         """ cac Branch co the dong mo """
@@ -349,6 +333,10 @@ class Configuration:
     def getShuntFlag3(self):
         """ cac Shunt co the dong mo """
         return self.param.shuntFLAG3
+    #
+    def getDGFlag3(self):
+        """Distributed generation state"""
+        return self.param.dgFLAG3
     #
     def getLineOff(self,lineFlag): # 0: inservice, 1 off service
         lineOff = []
@@ -364,14 +352,25 @@ class Configuration:
                 shuntOff.append(self.param.shuntFLAG3[i])
         return shuntOff
     #
-    def getVarFlag(self,lineOff,shuntOff):
+    def getDgOff(self,dgFlag): 
+        # 0: inservice, 1 off service
+        dgOff = []
+        for i in range(len(self.param.dgFLAG3)):
+            if dgFlag[i]:
+                dgOff.append(self.param.dgFLAG3[i])
+        return dgOff
+    #
+    def getVarFlag(self,lineOff,shuntOff,dgOff):
         varFlag = [0]*self.param.nVar
         for i in range(self.param.nL):
             if self.param.lineFLAG3[i] in lineOff:
                 varFlag[i] = 1
-        for i in range(self.param.nVar-self.param.nL):
+        for i in range(self.param.nSht):
             if self.param.shuntFLAG3[i] in shuntOff:
                 varFlag[self.param.nL+i] = 1
+        for i in range(self.param.nDg):
+            if self.param.dgFLAG3[i] in dgOff:
+                varFlag[self.param.nL+self.param.nSht+i] = 1
         return varFlag
     def __checkLoopIsland__(self,lineOff):
         # check island/loop multi slack ----------------------------------------
@@ -460,9 +459,9 @@ class Configuration:
         return lineISL,busC
 
 class RunMethod:
-    def __init__(self,param: Parameter,config:Configuration):
-        self.param = param
+    def __init__(self,config:Configuration):
         self.config = config
+        self.param = config.param
         self.lineOff = self.config.lineOff
         self.shuntOff = self.config.shuntOff
     def __initcsv__(self,fo):
@@ -528,9 +527,9 @@ class RunMethod:
         return    
 
 class YbusMatrix:
-    def __init__(self,param:Parameter,config:Configuration):
-        self.param = param
+    def __init__(self, config:Configuration):
         self.config = config
+        self.param = config.param
         self.setLineHnd = config.setLineHnd
         self.setLinebHnd = config.setLinebHnd
         self.shuntOff = config.shuntOff
@@ -590,12 +589,12 @@ class YbusMatrix:
         return Ybus
 
 class GaussSeidel(RunMethod):
-    def __init__(self,param:Parameter,config:Configuration):
-        super().__init__(param=param,config=config)
+    def __init__(self,config:Configuration):
+        super().__init__(config=config)
         self.accel = self.param.setting['accel']
     def __run1config__(self,fo=''):
         # ready to run Gauss Seidel
-        Ybus = YbusMatrix(self.param,self.config).__get_sparse_Ybus__()
+        Ybus = YbusMatrix(self.config).__get_sparse_Ybus__()
         # initialize result
         res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
         #
@@ -605,8 +604,12 @@ class GaussSeidel(RunMethod):
         for pi in self.param.profileID:
             P = {bi:(-self.param.loadProfile[pi][bi]).real for bi in self.config.setBusHnd}    #+self.Pgen
             Q = {bi:(-self.param.loadProfile[pi][bi]).imag for bi in self.config.setBusHnd}    #+self.Qgen
-            DP = {bi:0 for bi in self.param.setBusHnd}
-            DQ = {bi:0 for bi in self.param.setBusHnd}
+            #update P and Q of distributed generation in buses
+            for bi in self.config.dgOn:
+                P[bi] += self.param.dgProfile[pi][bi].real
+                Q[bi] += self.param.dgProfile[pi][bi].imag
+            DP = {bi:0 for bi in self.config.setBusHnd}
+            DQ = {bi:0 for bi in self.config.setBusHnd}
             sbus = {bi:(P[bi] + Q[bi]*1j) for bi in self.config.setBusHnd}
             vbus = {bi:complex(self.param.Ubase,0) for bi in self.config.setBusHnd}
             # initialize voltage correction
@@ -689,6 +692,11 @@ class GaussSeidel(RunMethod):
                 Snk = vbus[bi[0]]*np.conj(Ib1)
                 Skn = vbus[bi[1]]*np.conj(Ib2)
                 slt += Snk +Skn
+            for bs in self.param.busSlack:
+                if sbus[bs].imag:
+                    cosP.append(sbus[bs].real/abs(sbus[bs]))
+                else:
+                    cosN.append(-sbus[bs].real/abs(sbus[bs]))
             if fo:
                 sa1,va1,dia1 = dict(),dict(),dict()# for 1 profile
                 va1.update(vbus)
@@ -703,11 +711,11 @@ class GaussSeidel(RunMethod):
         return res
 
 class SparseNewtonRaphson(RunMethod):
-    def __init__(self,param:Parameter,config:Configuration):
-        super().__init__(param=param,config=config)
+    def __init__(self,config:Configuration):
+        super().__init__(config=config)
     def __run1config__(self, fo=''):
         # ready to run Newton raphson
-        Ybus = YbusMatrix(self.param,self.config).__get_sparse_Ybus__()
+        Ybus = YbusMatrix(self.config).__get_sparse_Ybus__()
         #
         res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
         #
@@ -742,6 +750,10 @@ class SparseNewtonRaphson(RunMethod):
             delta = {bi:0 for bi in self.config.setBusHnd}
             P = {bi:(-self.param.loadProfile[pi][bi]).real for bi in self.config.setBusHnd}    #+self.Pgen
             Q = {bi:(-self.param.loadProfile[pi][bi]).imag for bi in self.config.setBusHnd}    #+self.Qgen
+            #update P and Q of distributed generation in buses
+            for bi in self.config.dgOn:
+                P[bi] += self.param.dgProfile[pi][bi].real
+                Q[bi] += self.param.dgProfile[pi][bi].imag
             # update Vm of slack buses
             for bs in self.param.setSlack:
                 Vm[bs] = self.param.genProfile[pi][bs]
@@ -749,13 +761,13 @@ class SparseNewtonRaphson(RunMethod):
                 # Initialize Jacobian Matrix
                 A = np.zeros((no_jacobi_equation,no_jacobi_equation))
                 for b1 in self.config.setBusHnd:
-
+                    #
                     J1_row_offdiag_idx = J2_row_offdiag_idx = int((b1 - slackCounted[b1-1])-1)
                     J1_diag_idx = J2_row_diag_idx = J3_col_diag_idx = J1_row_offdiag_idx 
-
+                    #
                     J3_row_offdiag_idx = J4_row_offdiag_idx = int((self.param.nBus+b1-slackCounted[b1-1]-PVcounted[b1-1]-self.param.nSlack)-1)
                     J4_diag_idx = J2_col_diag_idx = J3_row_diag_idx = J3_row_offdiag_idx 
-
+                    #
                     J11 = 0
                     J22 = 0
                     J33 = 0
@@ -864,10 +876,14 @@ class SparseNewtonRaphson(RunMethod):
                     Il[li] = abs(Ib2)   
                 rate = ((Il[li])/self.param.LINE[li][3])*RATEC
                 ra.append(rate)
-                
                 Snk = vbus[bi[0]]*np.conj(Ib1)
                 Skn = vbus[bi[1]]*np.conj(Ib2)
-                slt += Snk +Skn 
+                slt += Snk +Skn
+            for bs in self.param.busSlack:
+                if sbus[bs].imag:
+                    cosP.append(sbus[bs].real/abs(sbus[bs]))
+                else:
+                    cosN.append(-sbus[bs].real/abs(sbus[bs])) 
             if fo:
                 sa1,va1,dia1 = dict(),dict(),dict()# for 1 profile
                 va1.update(vbus)
@@ -881,19 +897,16 @@ class SparseNewtonRaphson(RunMethod):
         return res
     
 class NewtonRaphson(RunMethod):
-    def __init__(self,param:Parameter,config:Configuration):
-        super().__init__(param=param,config=config)
+    def __init__(self,config:Configuration):
+        super().__init__(config=config)
     def __run1config__(self, fo=''):
         # ready to run Newton raphson
-
-        Ybus = YbusMatrix(self.param,self.config).__getYbus__()
-        
+        Ybus = YbusMatrix(self.config).__getYbus__()
         #
         res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
         #
         if fo:
             rB,rG,rL = super().__initcsv__(fo)
-        #
         # return Y bus magnitude
         Ym = np.abs(Ybus)
         # return phase angle of Ybus        
@@ -919,6 +932,10 @@ class NewtonRaphson(RunMethod):
             Vm = [float(self.param.Ubase) for _ in self.config.setBusHnd]
             P = [(-self.param.loadProfile[pi][bi]).real for bi in self.config.setBusHnd]    #+self.Pgen
             Q = [(-self.param.loadProfile[pi][bi]).imag for bi in self.config.setBusHnd]    #+self.Qgen
+            # include distributed generation to Pbus
+            for bi in self.config.dgOn:
+                P[bi-1] += self.param.dgProfile[pi][bi].real
+                Q[bi-1] += self.param.dgProfile[pi][bi].imag
             # update Vm of slack buses
             for bs in self.param.setSlack:
                 Vm[bs-1] = self.param.genProfile[pi][bs]
@@ -1060,8 +1077,8 @@ class NewtonRaphson(RunMethod):
         return res
 
 class PowerSummation(RunMethod):
-    def __init__(self,param:Parameter,config:Configuration):
-        super().__init__(param=param,config=config)
+    def __init__(self,config:Configuration):
+        super().__init__(config=config)
         self.busGroup = []# cac bus tuong ung o cac slack khac nhau
         for bs1 in self.param.busSlack:
             r1 = self.config.__findBusConnected__(bs1,self.config.busC,self.config.lineC)
@@ -1171,8 +1188,11 @@ class PowerSummation(RunMethod):
             rB,rG,rL = super().__initcsv__(fo)
         #
         va,ra,cosP,cosN = [],[],[1],[-1]
+        #
         for pi in self.param.profileID:
-            res['DeltaA']-=self.param.loadAll[pi].real
+            res['DeltaA'] -= self.param.loadAll[pi].real
+            if self.param.dgAll: 
+                res['DeltaA'] += self.param.dgAll[pi].real
             sa1,va1,dia1 = dict(),dict(),dict()# for 1 profile
             for i1 in range(self.param.nSlack):# with each slack bus
                 bs1 = self.param.busSlack[i1]
@@ -1182,10 +1202,14 @@ class PowerSummation(RunMethod):
                 vbus = {h1:complex(self.param.Ubase,0) for h1 in setBusHnd1}
                 vbus[bs1] = complex(self.param.genProfile[pi][bs1],0)
                 #
-                du,di = dict(),dict()
                 s0 = 0
+                du,di = dict(),dict()
                 for ii in range(self.param.iterMax+1):
                     sbus = {k:v for k,v in self.param.loadProfile[pi].items() if k in setBusHnd1}
+                    # 
+                    for k in self.config.dgOn:
+                        if k in setBusHnd1:
+                            sbus[k] -= self.param.dgProfile[pi][k]
                     # B of Line + Shunt
                     for k1,v1 in BUSb.items():
                         if k1 in setBusHnd1:
@@ -1202,7 +1226,7 @@ class PowerSummation(RunMethod):
                         di[bri] = ib
                         ds1 = ib*ib*rx
                         #
-                        if ds1.real>0.2 and ds1.real>sbus[bto].real:# neu ton that lon hon cong suat cua tai
+                        if ds1.real>0.2 and ds1.real>sbus[bto].real:# if delta S is greater than S
                             return {'FLAG':'DIVERGENCE'}
                         #
                         sbus[bfrom]+=ds1+sbus[bto]
@@ -1251,10 +1275,9 @@ class PowerSummation(RunMethod):
         return res
 
 class PowerFlow:
-    def __init__(self,param: Parameter,config: Configuration) -> None:
+    def __init__(self,config: Configuration):
         self.config = config
-        self.param = param
-        return
+        self.param = self.config.param
     
     def run1Config_WithObjective(self,option=None,fo=''):
         #
@@ -1277,10 +1300,11 @@ class PowerFlow:
         v1['Objective'] = obj
         v1['LineOff'] = self.config.lineOff
         v1['ShuntOff'] = self.config.shuntOff
+        v1['DgOff'] = self.config.dgOff
         return v1
     
     def run1Config(self,fo=''):
-        #check loop island and return if loop or island appears 
+        # check loop island and return if loop or island appears 
         t0 = time.time()
         #
         c1 = self.config.__checkLoopIsland__(self.config.lineOff)
@@ -1288,13 +1312,13 @@ class PowerFlow:
             return {'FLAG':c1}
         """ run PF 1 config """
         if self.param.setting['Algo_PF']=='PSM':
-            return PowerSummation(self.param,self.config).__run1config__()  
+            return PowerSummation(self.config).__run1config__()  
         elif self.param.setting['Algo_PF']=='N-R':
-            return NewtonRaphson(self.param,self.config).__run1config__() 
+            return NewtonRaphson(self.config).__run1config__() 
         elif self.param.setting['Algo_PF'] == 'GS':
-            return GaussSeidel(self.param,self.config).__run1config__()
+            return GaussSeidel(self.config).__run1config__()
         elif self.param.setting['Algo_PF'] == 'SNR':
-            return SparseNewtonRaphson(self.param,self.config).__run1config__()
+            return SparseNewtonRaphson(self.config).__run1config__()
         return None
 
 
@@ -1304,7 +1328,6 @@ if __name__ == "__main__":
     param = Parameter(ARGVS.fi)
     lineOff = [3,12,13,14,15,16]
     config = Configuration(param=param,lineOff=lineOff)
-    pf = PowerFlow(param=param,config=config)
+    pf = PowerFlow(config=config)
     res = pf.run1Config_WithObjective(fo=ARGVS.fo)
     print(res)
-
