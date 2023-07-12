@@ -1,9 +1,9 @@
 __author__    = "Dr Pham Quang Phuong","Cao Anh Quoc Hung"
 __copyright__ = "Copyright 2023"
 __license__   = "All rights reserved"
-__email__     = "phuong.phamquang@hust.edu.vn"
+__email__     = "phuong.phamquang@hust.edu.vn","caoanhquochung@gmail.com"
 __status__    = "Released"
-__version__   = "1.1.5"
+__version__   = "1.2"
 """
 about: ....
 """
@@ -16,18 +16,13 @@ from pyswarms.utils.plotters import plot_cost_history
 import pygad
 import matplotlib.pyplot as plt
 
+
 PARSER_INPUTS = argparse.ArgumentParser(epilog= "")
 PARSER_INPUTS.usage = 'Distribution network analysis Tools'
 PARSER_INPUTS.add_argument('-fi' , help = '*(str) Input file path .xlsx' , default = '',type=str,metavar='')
 PARSER_INPUTS.add_argument('-fo' , help = ' (str) Output file path .csv' , default = '',type=str,metavar='')
 ARGVS = PARSER_INPUTS.parse_known_args()[0]
 #
-def func1(x,param):
-    if type(x).__name__=='ndarray':
-        x = x.tolist()[0]
-    config = Configuration(param=param,varFlag=x)
-    pf = PowerFlow(config)
-    return pf.run1Config_WithObjective()['Objective']
 #
 def monteCarlo(nIter,lineOff0=[],shuntOff0=[],dgOff0=[]):
     nIter = int(nIter)
@@ -61,51 +56,50 @@ def monteCarlo(nIter,lineOff0=[],shuntOff0=[],dgOff0=[]):
     print(s1)
 ##    print(pf.nn)
 #
-def pso(nIter,lineOff0=[],shuntOff0=[],dgOff0=[]):
-    nIter = int(nIter)
-    print('Running PSO nIter=%i'%nIter)
-    import pyswarms as ps
-    import numpy as np
-    #
-    param = Parameter(ARGVS.fi)
-    #
+class PSO:
+    def func1(self,x,param):
+        if type(x).__name__=='ndarray':
+            x = x.tolist()[0]
+        config = Configuration(param=param,varFlag=x)
+        pf = PowerFlow(config)
+        return pf.run1Config_WithObjective()['Objective']
+    
+    def run(self,nIter,lineOff0=[],shuntOff0=[],dgOff0=[]):
+        nIter = int(nIter)
+        print('Running PSO nIter=%i'%nIter)
+        import pyswarms as ps
+        import numpy as np
+        #
+        param = Parameter(ARGVS.fi)
+        #
+        config = Configuration(param,lineOff0,shuntOff0,dgOff0)
 
-    options = {'c1': 0.5, 'c2': 0.3, 'w': 0.9,'k':1,'p':1}
-    #
-    pos0 = None
-    if lineOff0 or shuntOff0 or dgOff0 :
-        pos0 = np.array([config.getVarFlag()])
-    #
-    op = ps.discrete.binary.BinaryPSO(n_particles=1,dimensions=param.nVar,options=options,init_pos=pos0)
-    cost_history = op.cost_history
-    #
-    cost, pos = op.optimize(func1, iters=nIter,param=param)
-    #
-    plot_cost_history(cost_history)
-    plt.show()
-    #
-    config = Configuration(param=param,varFlag=pos)
-    pf = PowerFlow(config)
-    r1 = pf.run1Config_WithObjective()
-    rs = [[],[time.ctime(),'PSO init_pos (lineOff)',str(lineOff0)],['Objective','DeltaA','RateMax[%]','Umax[pu]','Umin[pu]','LineOff','ShuntOff'] ]
-    rs.append( ['%.5f'%r1['Objective'],'%.5f'%r1['DeltaA'].real,'%.3f'%r1['RateMax[%]'],'%.3f'%r1['Umax[pu]'],'%.3f'%r1['Umin[pu]'],str(r1['LineOff']),str(r1['ShuntOff'])])
-    add2CSV(ARGVS.fo,rs,',')
-    #
-    s1 = ['PSO','nIter',nIter,str(r1['LineOff']),str(r1['ShuntOff']),str(r1['DgOff'])]
-    add2CSV(ARGVS.fo,[s1],',')
-    print('\nOutFile: '+os.path.abspath(ARGVS.fo))
-    print(s1)
-#
-# "D:\\00_BK\\optimpy\\Python310_64\\python.exe" optim2.py
-"""
-def fitness_func(reconfiguration_ga,solution,solution_idx):
+        options = {'c1': 0.5, 'c2': 0.3, 'w': 0.9,'k':1,'p':1}
+        #
+        pos0 = None
+        if lineOff0 or shuntOff0 or dgOff0 :
+            pos0 = np.array([config.getVarFlag()])
+        #
+        op = ps.discrete.binary.BinaryPSO(n_particles=1,dimensions=param.nVar,options=options,init_pos=pos0)
+        cost_history = op.cost_history
+        #
+        cost, pos = op.optimize(self.func1, iters=nIter,param=param)
+        #
+        plot_cost_history(cost_history)
+        plt.show()
+        #
+        config = Configuration(param=param,varFlag=pos)
+        pf = PowerFlow(config)
+        r1 = pf.run1Config_WithObjective()
+        rs = [[],[time.ctime(),'PSO init_pos (lineOff)',str(lineOff0)],['Objective','DeltaA','RateMax[%]','Umax[pu]','Umin[pu]','LineOff','ShuntOff'] ]
+        rs.append( ['%.5f'%r1['Objective'],'%.5f'%r1['DeltaA'].real,'%.3f'%r1['RateMax[%]'],'%.3f'%r1['Umax[pu]'],'%.3f'%r1['Umin[pu]'],str(r1['LineOff']),str(r1['ShuntOff'])])
+        add2CSV(ARGVS.fo,rs,',')
+        #
+        s1 = ['PSO','nIter',nIter,str(r1['LineOff']),str(r1['ShuntOff']),str(r1['DgOff'])]
+        add2CSV(ARGVS.fo,[s1],',')
+        print('\nOutFile: '+os.path.abspath(ARGVS.fo))
+        print(s1)
 
-    r1 = pf.run1Config_WithObjective(varFlag=solution)
-    #
-    fitness = -r1['Objective']
-    return fitness
-"""
-#
 class GA():
     def __init__(self):
         self.param = Parameter(ARGVS.fi)
@@ -115,7 +109,7 @@ class GA():
         r1 = pf.run1Config_WithObjective()
         fitness = -r1['Objective']
         return fitness
-    def reconfiguration_ga(self,nIter,lineOff0=[],shuntOff0=[],dgOff0=[]):
+    def run(self,nIter,lineOff0=[],shuntOff0=[],dgOff0=[]):
         nIter = int(nIter)
         print('Running Genetic Algorithm nIter=%i'%nIter)
         param = Parameter(ARGVS.fi)
@@ -166,25 +160,14 @@ if __name__ == '__main__':
     #ARGVS.fi = 'Inputs102.xlsx'
 
     #
-    
-    #
-##    lineOff0 = [7, 8, 9, 11, 15] # init, =[] if no init
-    lineOff0 = [] # no init
-    shuntOff0 = []
-##    lineOff0 = [66, 103, 110, 169, 191]
-##    shuntOff0 = [47, 66, 80, 130]
-    #
-    #
-    #
-    pso(1e6,lineOff0,shuntOff0,dgOff0)
-    """
-    ARGVS.fi = 'Inputs12_2-low.xlsx'
+
+    ARGVS.fi = 'Inputs33bc_shunt100.xlsx'
     lineOff0 = [] # no init
     shuntOff0 = []
     dgOff0 = []
     ARGVS.fo = 'res\\resOptim12.csv'
-    pso(1e4,lineOff0,shuntOff0,dgOff0)
-    #GA().reconfiguration_ga(1000,lineOff0,shuntOff0,dgOff0)
+    #PSO().run(1e7,lineOff0,shuntOff0,dgOff0)
+    GA().run(10000,lineOff0,shuntOff0,dgOff0)
     
     
     
