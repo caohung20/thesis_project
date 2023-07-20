@@ -224,11 +224,13 @@ class Parameter:
                     self.shuntFLAG3.append(busa['NO'][i])
         #
         self.dgFLAG3 = []
+        self.dgOn = []
         if 'FLAG4' in busa.keys():
             for i in range(len(busa['NO'])):
                 if busa['FLAG4'][i]:
                     self.dgFLAG3.append(busa['NO'][i])
-
+                    self.dgOn.append(busa['NO'][i])
+        
         #
         self.nL = len(self.lineFLAG3)
         self.nSht = len(self.shuntFLAG3)
@@ -295,15 +297,13 @@ class Parameter:
     #
 
 class Configuration:
-    def __init__(self,param: Parameter,lineOff=[],shuntOff=[],dgOff=[],varFlag=None):
+    def __init__(self,param: Parameter,lineOff=[],shuntOff=[],varFlag=None):
         self.param = param
         if varFlag is not None:
             if len(varFlag)!=self.param.nVar:
                 raise Exception('Error size of varFlag')
             lineOff = self.getLineOff(varFlag[:self.param.nL])
-            shuntOff = self.getShuntOff(varFlag[self.param.nL:(self.param.nVar-self.param.nDg)])
-            dgOff = self.getDgOff(varFlag[self.param.nSht:])
-        #
+            shuntOff = self.getShuntOff(varFlag[self.param.nL:])
         #
         self.setBusHnd =self.param.setBusHnd
         self.setLineHnd = self.param.setLineHndAll - set(lineOff)
@@ -311,7 +311,6 @@ class Configuration:
         #
         self.shuntOff = set(shuntOff)
         self.lineOff = set(lineOff)
-        self.dgOff = set(dgOff)
         #
         self.lineSureISL,busc1 = self.__getLineISL__(self.param.BUSC)
         self.bus0ISL = set(busc1.keys())
@@ -324,7 +323,7 @@ class Configuration:
             self.busC[v[1]].add(k)
         #
         #Dg On
-        self.dgOn = set(self.param.dg.keys()).difference(self.dgOff)
+        self.dgOn = self.param.dgOn
     #
     def getLineFlag3(self):
         """ cac Branch co the dong mo """
@@ -333,10 +332,6 @@ class Configuration:
     def getShuntFlag3(self):
         """ cac Shunt co the dong mo """
         return self.param.shuntFLAG3
-    #
-    def getDGFlag3(self):
-        """Distributed generation state"""
-        return self.param.dgFLAG3
     #
     def getLineOff(self,lineFlag): # 0: inservice, 1 off service
         lineOff = []
@@ -352,14 +347,7 @@ class Configuration:
                 shuntOff.append(self.param.shuntFLAG3[i])
         return shuntOff
     #
-    def getDgOff(self,dgFlag): 
-        # 0: inservice, 1 off service
-        dgOff = []
-        for i in range(len(self.param.dgFLAG3)):
-            if dgFlag[i]:
-                dgOff.append(self.param.dgFLAG3[i])
-        return dgOff
-    #
+ 
     def getVarFlag(self,lineOff,shuntOff,dgOff):
         varFlag = [0]*self.param.nVar
         for i in range(self.param.nL):
@@ -368,9 +356,6 @@ class Configuration:
         for i in range(self.param.nSht):
             if self.param.shuntFLAG3[i] in shuntOff:
                 varFlag[self.param.nL+i] = 1
-        for i in range(self.param.nDg):
-            if self.param.dgFLAG3[i] in dgOff:
-                varFlag[self.param.nL+self.param.nSht+i] = 1
         return varFlag
     def __checkLoopIsland__(self,lineOff):
         # check island/loop multi slack ----------------------------------------
@@ -1271,7 +1256,7 @@ class PowerSummation(RunMethod):
         res = super().__update_result__(res,va,ra,cosP,cosN)
         #
         if fo:
-            super().__export_profiles__
+            super().__export_profiles__(fo,rB,rL,rG,res)
         return res
 
 class PowerFlow:
@@ -1300,7 +1285,6 @@ class PowerFlow:
         v1['Objective'] = obj
         v1['LineOff'] = self.config.lineOff
         v1['ShuntOff'] = self.config.shuntOff
-        v1['DgOff'] = self.config.dgOff
         return v1
     
     def run1Config(self,fo=''):
@@ -1312,21 +1296,21 @@ class PowerFlow:
             return {'FLAG':c1}
         """ run PF 1 config """
         if self.param.setting['Algo_PF']=='PSM':
-            return PowerSummation(self.config).__run1config__()  
+            return PowerSummation(self.config).__run1config__(fo)  
         elif self.param.setting['Algo_PF']=='N-R':
-            return NewtonRaphson(self.config).__run1config__() 
+            return NewtonRaphson(self.config).__run1config__(fo) 
         elif self.param.setting['Algo_PF'] == 'GS':
-            return GaussSeidel(self.config).__run1config__()
+            return GaussSeidel(self.config).__run1config__(fo)
         elif self.param.setting['Algo_PF'] == 'SNR':
-            return SparseNewtonRaphson(self.config).__run1config__()
+            return SparseNewtonRaphson(self.config).__run1config__(fo)
         return None
 
 
 if __name__ == "__main__":
-    ARGVS.fi = 'Inputs12_2.xlsx'
+    ARGVS.fi = 'Inputs33bc_shunt100.xlsx'
     ARGVS.fo = 'res\\res1Config.csv'
     param = Parameter(ARGVS.fi)
-    lineOff = [3,12,13,14,15,16]
+    lineOff = [33, 36, 37, 7, 11]
     config = Configuration(param=param,lineOff=lineOff)
     pf = PowerFlow(config=config)
     res = pf.run1Config_WithObjective(fo=ARGVS.fo)
