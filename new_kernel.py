@@ -7,10 +7,11 @@ __version__   = "1.2"
 """
 about: ....
 """
-import os,time,math
+import sys,os,time,math
 import openpyxl,csv
 import argparse
 import numpy as np
+from scipy.sparse import csr_matrix
 """
 import psutil
 process = psutil.Process()
@@ -184,12 +185,10 @@ class Parameter:
             for ii in range(len(self.profiledgID)):
                 k = dgProfile['time\\NOBUS'][ii]
                 v1 = dict()
-                self.dgAll[k] = 0
                 for k1 in dgProfile.keys():
                     if k1!='time\\NOBUS':
                         n1 = int(k1)
                         v1[n1] = complex(dgProfile[k1][ii] * self.dg[n1][0],dgProfile[k1][ii] *self.dg[n1][1])
-                        self.dgAll[k] += v1[n1]
                 self.dgProfile[k] = v1
         # LINE[NO] = [FROMBUS,TOBUS,RX(Ohm),B/2(Siemens),RATE ]
         self.LINE = {}
@@ -230,7 +229,16 @@ class Parameter:
                 if busa['FLAG4'][i]:
                     self.dgFLAG3.append(busa['NO'][i])
                     self.dgOn.append(busa['NO'][i])
-        
+        if self.dgOn:
+            for ii in range(len(self.profiledgID)):
+                k = dgProfile['time\\NOBUS'][ii]
+                v1 = dict()
+                self.dgAll[k] = 0
+                for k1 in self.dgOn:
+                    if k1!='time\\NOBUS':
+                        n1 = int(k1)
+                        v1[n1] = complex(dgProfile[str(k1)][ii] * self.dg[n1][0],dgProfile[str(k1)][ii] *self.dg[n1][1])
+                        self.dgAll[k] += v1[n1]
         #
         self.nL = len(self.lineFLAG3)
         self.nSht = len(self.shuntFLAG3)
@@ -512,6 +520,7 @@ class RunMethod:
         return    
 
 class YbusMatrix:
+    
     def __init__(self, config:Configuration):
         self.config = config
         self.param = config.param
@@ -526,7 +535,8 @@ class YbusMatrix:
         #formation of the off diagonal elements
         for k,v in self.config.lineC.items():
             y[k] = y[k]/self.param.LINE[k][2]
-            sparse_ybus[frozenset({v[0],v[1]})] = -y[k]   
+            sparse_ybus[(v[0],v[1])] = -y[k]
+            sparse_ybus[(v[1],v[0])] = sparse_ybus[(v[0],v[1])]
         #calculate yline with lineb: 
         for lbi in self.setLinebHnd:
             y[lbi] += self.param.LINEb[lbi]*1j
@@ -573,6 +583,42 @@ class YbusMatrix:
                 Ybus[k1-1][k1-1] += v1*1j
         return Ybus
 
+    def __get_sparse_ybus_list__(self):
+        row,col,data = [],[],[]
+        #initialize branch admittance
+        y = {k:(1+0j) for k in self.setLineHnd}
+        #formation of the off diagonal elements
+        for k,v in self.config.lineC.items():
+            y[k] = y[k]/self.param.LINE[k][2]
+            ib1 = v[0] - 1
+            ib2 = v[1] - 1
+            row.append(ib1)
+            col.append(ib2)
+            row.append(ib2)
+            col.append(ib1)
+            data.append(-y[k])
+            data.append(-y[k])
+        #calculate yline with lineb: 
+        for lbi in self.setLinebHnd:
+            y[lbi] += self.param.LINEb[lbi]*1j
+        diag = [(0+0j) for _ in self.config.setBusHnd]
+        for k1,v1 in self.param.BUSbs.items():
+            if k1 not in self.shuntOff:
+                diag[k1-1] += v1*1j
+        #formation of the diagonal elements
+        for bi in self.config.busC.keys():
+            for li in self.config.busC[bi]:
+                diag[bi-1] +=  y[li]
+        for i in range(len(self.config.setBusHnd)):
+            col.append(i)
+            row.append(i)
+        data.extend(diag)
+        sparse_Ybus = csr_matrix((data, (row, col)), shape=(self.param.nBus,self.param.nBus))
+        return sparse_Ybus
+
+
+
+
 class GaussSeidel(RunMethod):
     def __init__(self,config:Configuration):
         super().__init__(config=config)
@@ -597,7 +643,7 @@ class GaussSeidel(RunMethod):
             DQ = {bi:0 for bi in self.config.setBusHnd}
             sbus = {bi:(P[bi] + Q[bi]*1j) for bi in self.config.setBusHnd}
             vbus = {bi:complex(self.param.Ubase,0) for bi in self.config.setBusHnd}
-            # initialize voltage correction
+            # initialize voltage calculate
             Vc = {bi:complex(0,0) for bi in self.config.setBusHnd}
             # update Vm of slack buses
             for bs in self.param.setSlack:
@@ -612,7 +658,7 @@ class GaussSeidel(RunMethod):
                             if b1 == b2:
                                 pass
                             else:
-                                line = frozenset({b1,b2})
+                                line = (b1,b2)
                                 YV += Ybus[line] * vbus[b2]
                     Sc = np.conj(vbus[b1]) * (Ybus[b1] * vbus[b1] + YV)
                     Sc = np.conj(Sc)
@@ -664,7 +710,7 @@ class GaussSeidel(RunMethod):
             slt = 0
             Il = dict()
             for li,bi in self.config.lineC.items():
-                line = frozenset({bi[0],bi[1]})
+                line = (bi[0],bi[1])
                 Ib1 = (vbus[bi[0]]-vbus[bi[1]])*(-Ybus[line])
                 Ib2 = (vbus[bi[1]]-vbus[bi[0]])*(-Ybus[line])
                 #
@@ -701,6 +747,11 @@ class SparseNewtonRaphson(RunMethod):
     def __run1config__(self, fo=''):
         # ready to run Newton raphson
         Ybus = YbusMatrix(self.config).__get_sparse_Ybus__()
+        #
+        # Measure memory usage of the variable
+        #memory_usage = sys.getsizeof(Ybus)
+        # Print the memory usage
+        #print(f"Memory usage of the variable: {memory_usage} bytes")
         #
         res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
         #
@@ -763,7 +814,7 @@ class SparseNewtonRaphson(RunMethod):
                             if b1 == b2:
                                 pass
                             else:
-                                line = frozenset({b1,b2})
+                                line = (b1,b2)
                                 # diagonal elements of J1
                                 J11 += Vm[b1] * Vm[b2] * Ym[line] * math.sin((theta[line] - delta[b1] + delta[b2]).real)
                                 # diagonal elements of J3          
@@ -851,7 +902,7 @@ class SparseNewtonRaphson(RunMethod):
             slt = 0
             Il = dict()
             for li,bi in self.config.lineC.items():
-                line = frozenset({bi[0],bi[1]})
+                line = (bi[0],bi[1])
                 Ib1 = (vbus[bi[0]]-vbus[bi[1]])*(-Ybus[line])
                 Ib2 = (vbus[bi[1]]-vbus[bi[0]])*(-Ybus[line])
                 #
@@ -888,6 +939,10 @@ class NewtonRaphson(RunMethod):
         # ready to run Newton raphson
         Ybus = YbusMatrix(self.config).__getYbus__()
         #
+        # Measure memory usage of the variable
+        memory_usage = sys.getsizeof(Ybus)
+        # Print the memory usage
+        print(f"Memory usage of the variable: {memory_usage} bytes")
         res = {'FLAG':'CONVERGENCE','RateMax[%]':0, 'Umax[pu]':0,'Umin[pu]':100,'DeltaA':0,'cosP':0,'cosN':0}
         #
         if fo:
@@ -1307,11 +1362,20 @@ class PowerFlow:
 
 
 if __name__ == "__main__":
-    ARGVS.fi = 'Inputs33bc_shunt100.xlsx'
-    ARGVS.fo = 'res\\res1Config.csv'
+    ARGVS.fi = 'tromvia200percentSmax.xlsx'
+    ARGVS.fo = ''
     param = Parameter(ARGVS.fi)
-    lineOff = [33, 36, 37, 7, 11]
-    config = Configuration(param=param,lineOff=lineOff)
+    t1 = time.time()
+    lineOff = [28,  3,  7, 11, 14]
+    shuntOff = []
+    config = Configuration(param=param,lineOff=lineOff,shuntOff=shuntOff)
     pf = PowerFlow(config=config)
     res = pf.run1Config_WithObjective(fo=ARGVS.fo)
+    t2 = time.time()
+    print(t2-t1)
     print(res)
+    """
+    ybus = YbusMatrix(config=config)
+    matrix = ybus.__get_sparse_ybus_list__()
+    print(matrix)
+    """

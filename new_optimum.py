@@ -9,6 +9,7 @@ about: ....
 """
 from new_kernel import add2CSV,PowerFlow,Parameter,Configuration
 import os,sys,time
+import openpyxl
 import argparse
 import random
 import math
@@ -101,37 +102,59 @@ class PSO:
         print(s1)
 
 class GA():
-    def __init__(self):
-        self.param = Parameter(ARGVS.fi)
+    def __init__(self,fi,fo):
+        self.fo = fo
+        self.fi = fi
+        self.param = Parameter(fi)
+        wbInput = openpyxl.load_workbook(os.path.abspath(fi),data_only=True)
+        self.gaparam = self.__readParameter__(wbInput)
+    def __readParameter__(self,wbInput):
+        ws = wbInput['SETTING']
+        k = 0
+        res = {}
+        while True:
+            k+=1
+            s1= ws.cell(k,1).value
+            if type(s1)==str and s1.replace(' ','')=='##GAParameters':
+                for j in range(1,100):
+                    s2 = str(ws.cell(k+1,j).value).strip()
+                    if s2=='None':
+                        break
+                    sa = str(ws.cell(k+2,j).value).split(',')
+                    if len(sa)==1:
+                        try:
+                            res[s2] = float(sa[0])
+                        except:
+                            res[s2] = sa[0]
+                    else:
+                        res[s2] = [float(si) for si in sa]
+                break
+        return res
     def fitness_func(self,reconfiguration,solution,solution_idx):
         config = Configuration(param=self.param,varFlag=solution)
         pf = PowerFlow(config=config)
         r1 = pf.run1Config_WithObjective()
         fitness = -r1['Objective']
         return fitness
-    def run(self,nIter,lineOff0=[],shuntOff0=[]):
-        nIter = int(nIter)
+    def run(self,lineOff0=[],shuntOff0=[]):
+        nIter = int(self.gaparam['nIter'])
         print('Running Genetic Algorithm nIter=%i'%nIter)
-        param = Parameter(ARGVS.fi)
+        param = Parameter(self.fi)
         rs = [[],[time.ctime(),'GeneticAlgorithm init_pos lineOff0=%s shuntOff0=%s'%(str(lineOff0),str(shuntOff0))],['iter','Objective','DeltaA','RateMax[%]','Umax[pu]','Umin[pu]','LineOff','ShuntOff'] ]
-        add2CSV(ARGVS.fo,rs,',')
         r0 = {'Objective':math.inf,'LineOff':lineOff0,'ShuntOff':shuntOff0}
-        if lineOff0 or shuntOff0:
-            config = Configuration(param=param,lineOff=lineOff0,shuntOff=shuntOff0)
-            pf = PowerFlow(config)
-            r1 = pf.run1Config_WithObjective()
-            rs = ['init','%.5f'%r1['Objective'],'%.5f'%r1['DeltaA'].real,'%.3f'%r1['RateMax[%]'],'%.3f'%r1['Umax[pu]'],'%.3f'%r1['Umin[pu]'],str(r1['LineOff']),str(r1['ShuntOff'])]
-            add2CSV(ARGVS.fo,[rs],',')
-            r0 = r1
-        gene_space = [[0,1] for _ in range(param.nVar)]
-        reconfiguration = pygad.GA(num_generations=nIter,
-                        num_parents_mating=40,
+        gene_space = [tuple([0,1]) for _ in range(param.nVar)]
+        start = time.time()
+        reconfiguration = pygad.GA(
+                        num_generations=nIter,
+                        num_parents_mating=int(self.gaparam['num_parents_mating']),
                         fitness_func=self.fitness_func,
-                        sol_per_pop=100,mutation_num_genes=10,
+                        sol_per_pop=int(self.gaparam['sol_per_pop']),
+                        mutation_num_genes=int(self.gaparam['mutation_num_genes']),
                         num_genes=param.nVar,gene_space=gene_space,
                         gene_type=int,keep_elitism=1,
-                        crossover_probability=0.8,
-                        mutation_probability=0.03,)#parallel_processing=4)
+                        crossover_probability=self.gaparam['crossover_probability'],
+                        mutation_probability=self.gaparam['mutation_probability'],)
+                            #parallel_processing=4 ,mutation_num_genes=10)
         reconfiguration.run()
 
         # Retrieve the best solution and its fitness value
@@ -143,8 +166,14 @@ class GA():
         config = Configuration(param=param,varFlag=best_solution[0])
         lineOff = config.lineOff
         shuntOff = config.shuntOff
-        s1 = ['GA','nIter',nIter,str(lineOff),str(shuntOff)]
-
+        pf = PowerFlow(config=config)
+        res = pf.run1Config_WithObjective(fo=self.fo)
+        s1 = ['GA','nIter',nIter,str(lineOff),str(shuntOff),str(best_solution[1]),res['Objective']]
+        add2CSV(self.fo,[s1],',')
+        pf = PowerFlow(config=config)
+        res = pf.run1Config_WithObjective(self.fo)
+        end = time.time()
+        print(end-start)
         print(s1)
         #
         reconfiguration.plot_fitness()
@@ -152,22 +181,21 @@ class GA():
         return 
 if __name__ == '__main__':
     
-    ARGVS.fi = 'Inputs33bc_shunt100.xlsx'
+    ARGVS.fi = 'tromvia200percentSmax.xlsx'
     #ARGVS.fi = 'Inputs12_2-low2.xlsx'
     
     #ARGVS.fi = 'Inputs190month.xlsx'
     #ARGVS.fi = 'Inputs102.xlsx'
-
+    
     #
 
     #ARGVS.fi = 'Inputs12_2-low.xlsx'
     lineOff0 = [] # no init
     shuntOff0 = []
-    ARGVS.fo = 'res\\resOptim12.csv'
+    ARGVS.fo = 'res\\130withoutdg.csv'
     #PSO().run(1e4,lineOff0,shuntOff0)
-    start = time.time()
-    GA().run(50000,lineOff0,shuntOff0)
-    end = time.time()
-    print(end-start)
+    
+    GA(ARGVS.fi,ARGVS.fo).run(lineOff0,shuntOff0)
+    
     
     
